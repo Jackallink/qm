@@ -146,6 +146,8 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
         ) => handleExtensionUiRequest(request, scope, input);
 
         try {
+          const started = Date.now();
+          const statsBefore = await client.getSessionStats().catch(() => null);
           const result = await client.promptAndCollect(input.input, {
             streamingBehavior: "steer",
             ...(input.images?.length ? { images: input.images } : {}),
@@ -153,6 +155,43 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
             timeoutMs: 300_000,
           });
           const reply = result.reply.trim();
+          // Report token/cost usage to QM (budget tracking + session_llm_requests).
+          // Session stats are cumulative, so take the delta between before/after.
+          const { model } = resolveProviderModel(scope);
+          const stats = await client.getSessionStats().catch(() => null);
+          if (stats && input.recordLlmRequest) {
+            const t = (tokens: Record<string, unknown> | null | undefined) => ({
+              input: Number((tokens?.input as number | undefined) ?? 0),
+              output: Number((tokens?.output as number | undefined) ?? 0),
+              cacheRead: Number((tokens?.cacheRead as number | undefined) ?? 0),
+              cacheWrite: Number((tokens?.cacheWrite as number | undefined) ?? 0),
+            });
+            const after = t(stats.tokens as Record<string, unknown> | undefined);
+            const before = t(statsBefore?.tokens as Record<string, unknown> | undefined);
+            const costUsd = Math.max(0, (typeof stats.cost === "number" ? stats.cost : 0) - (typeof statsBefore?.cost === "number" ? statsBefore.cost : 0));
+            const tokenInput = after.input - before.input;
+            const output = after.output - before.output;
+            const cacheRead = after.cacheRead - before.cacheRead;
+            const cacheWrite = after.cacheWrite - before.cacheWrite;
+            await Promise.resolve(
+              input.recordLlmRequest({
+                turnSeq: null,
+                step: 0,
+                model: model ?? "prime",
+                request: { prompt: input.input },
+                truncated: false,
+                durationMs: Date.now() - started,
+                usage: {
+                  input: Math.max(0, tokenInput),
+                  output: Math.max(0, output),
+                  cacheRead: Math.max(0, cacheRead),
+                  cacheWrite: Math.max(0, cacheWrite),
+                  totalTokens: Math.max(0, tokenInput + output + cacheRead + cacheWrite),
+                  costUsd,
+                },
+              }),
+            ).catch(() => undefined);
+          }
           return {
             reply,
             modelCalls: result.toolCalls + 1,
