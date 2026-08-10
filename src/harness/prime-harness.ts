@@ -69,14 +69,13 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     const { provider, model } = resolveProviderModel(scope);
     return {
       cliPath: opts.primeBin ?? "prime-agent",
-      cwd: opts.cwd,
+      cwd: opts.cwd ?? sessionDirFor(scope),
       provider,
       model,
       sessionDir: sessionDirFor(scope),
       systemPrompt: opts.systemPrompt,
       args: opts.args,
       env: opts.env,
-      onExtensionUiRequest: (request) => opts.onExtensionUiRequest?.(request, scope),
     };
   };
 
@@ -97,21 +96,39 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   };
 
   const handleExtensionUiRequest = async (
+    client: PrimeRpcClient,
     request: RpcExtensionUiRequest,
     scope: ScopeId,
     input: HarnessTurnInput,
   ): Promise<void> => {
-    // Approval bridge hook (wiring-level). Default: auto-cancel dialogs so a
-    // headless turn never blocks on an unanswered select/confirm/input.
+    // One-way UI updates never block the turn.
+    if (request.method === "notify" || request.method === "setStatus" || request.method === "setWidget") return;
+    if (request.method === "setTitle" || request.method === "set_editor_text") return;
+    // Dialog requests (select/confirm/input/editor): bridge into QM's approval
+    // gate. Approved tools are auto-confirmed (Auto posture grants); anything
+    // else is denied by cancelling so a headless turn never blocks.
+    const label = [request.title, request.message].filter(Boolean).join(" — ") || request.method;
+    const gate = input.toolApprovalGate;
+    if (gate && gate(`tool:${label}`)) {
+      if (request.method === "confirm") {
+        await client.respondExtensionUi(request.id, { confirmed: true });
+      } else if (request.method === "select" && request.options?.length) {
+        await client.respondExtensionUi(request.id, { value: request.options[0]! });
+      } else if (request.method === "input") {
+        await client.respondExtensionUi(request.id, { value: "" });
+      } else {
+        await client.respondExtensionUi(request.id, { value: "" });
+      }
+      return;
+    }
     if (opts.onExtensionUiRequest) {
       await opts.onExtensionUiRequest(request, scope);
       return;
     }
-    // Default: deny dialogs (treat as cancelled) — strict posture semantics
-    // will come with the real bridge in a later iteration.
-    if (request.method === "notify" || request.method === "setStatus" || request.method === "setWidget") return;
-    void input;
+    await client.respondExtensionUi(request.id, { cancelled: true });
   };
+
+  void handleExtensionUiRequest;
 
   return defineHarness(
     {
@@ -140,10 +157,9 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
           }
           prevOnEvent?.(event);
         };
-        // extension UI requests need the turn input for the approval bridge.
-        (client["options"] as { onExtensionUiRequest?: (r: RpcExtensionUiRequest) => void | Promise<void> }).onExtensionUiRequest = (
-          request,
-        ) => handleExtensionUiRequest(request, scope, input);
+        // extension UI requests need the turn input for the approval gate.
+        (client["options"] as { onExtensionUiRequest?: (r: RpcExtensionUiRequest) => void | Promise<void> }).onExtensionUiRequest =
+          (request) => handleExtensionUiRequest(client, request, scope, input);
 
         try {
           const started = Date.now();

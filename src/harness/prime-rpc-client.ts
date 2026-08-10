@@ -296,6 +296,21 @@ export class PrimeRpcClient {
     if (!response.success) throw new Error(response.error ?? `prime-agent command ${response.command} failed`);
   }
 
+  /** Answer an in-flight extension UI request (approval bridge). */
+  async respondExtensionUi(
+    id: string,
+    response: { value?: string; confirmed?: boolean; cancelled?: boolean },
+  ): Promise<void> {
+    if (!this.process?.stdin) throw new Error("client not started");
+    const payload =
+      response.cancelled === true
+        ? { type: "extension_ui_response", id, cancelled: true }
+        : response.value !== undefined
+          ? { type: "extension_ui_response", id, value: response.value }
+          : { type: "extension_ui_response", id, confirmed: response.confirmed === true };
+    this.process.stdin.write(serializeJsonLine(payload));
+  }
+
   // ---- high-level helpers -------------------------------------------------
 
   async getState(): Promise<Record<string, unknown>> {
