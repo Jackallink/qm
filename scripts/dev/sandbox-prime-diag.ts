@@ -13,7 +13,7 @@ async function main() {
   log("1. workspace + sandbox");
   const ws = createLocalWorkspaceStore("/tmp/qm-sandbox-ws");
   const sandbox = createLocalSandbox(ws, { image: "qm-sandbox-prime:latest", defaultTimeoutSec: 60 });
-  const handle = await sandbox.provision([], { scopeId: "person:jakeliu" as unknown as ScopeId });
+  const handle = await sandbox.provision([], {});
   log(`handle: ${handle.id}`);
 
   const cmd =

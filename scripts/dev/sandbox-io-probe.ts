@@ -9,7 +9,7 @@ import type { ScopeId } from "../../src/types.ts";
 async function main() {
   const ws = createLocalWorkspaceStore("/tmp/qm-sandbox-ws");
   const sandbox = createLocalSandbox(ws, { image: "qm-sandbox-prime:latest", defaultTimeoutSec: 120 });
-  const handle = await sandbox.provision([], { scopeId: "person:jakeliu" as unknown as ScopeId });
+  const handle = await sandbox.provision([], {});
   console.log("handle:", handle.id);
 
   console.log("\n== 1. startProcess (sh 循环 echo) ==");

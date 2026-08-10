@@ -20,9 +20,9 @@ function mockTurn(text: string, scope: string): HarnessTurnInput {
     tools: {} as unknown as HarnessTurnInput["tools"],
     scopeLabel: scope as unknown as ScopeId,
     orgScopeId: "org:acme" as unknown as ScopeId,
-    emit: async (entry) => entry as unknown as import("../../src/types.ts").SessionEntry,
+    emit: async (entry: import("../../src/types.ts").SessionEntry) => entry,
     recordModelCall: () => {},
-  } as HarnessTurnInput;
+  } as unknown as HarnessTurnInput;
 }
 
 async function main() {
@@ -32,7 +32,7 @@ async function main() {
 
   const scope: ScopeId = "person:jakeliu" as unknown as ScopeId;
   console.log("provision 沙箱...");
-  const handle = await sandbox.provision([], { scopeId: scope });
+  const handle = await sandbox.provision([], {});
   console.log("handle:", handle.id, "| backend:", handle.backend, "| rootDir:", handle.rootDir);
 
   const harness = createPrimeHarness({
