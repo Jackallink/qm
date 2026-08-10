@@ -52,6 +52,14 @@ export interface PrimeHarnessOptions {
   args?: string[];
   /** Extra env for the prime-agent process. */
   env?: Record<string, string>;
+  /**
+   * Forced egress: route prime's network through QM's egress proxy.
+   * Set both to have the child process send proxy-authorization and route
+   * HTTP/HTTPS through the proxy (deployment environments; locally the
+   * decision chain is verified via scripts/dev/egress-probe.ts).
+   */
+  egressProxyUrl?: string;
+  egressToken?: string;
 }
 
 const DEFAULT_BUDGET = 200_000;
@@ -81,7 +89,17 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
       sessionDir: sessionDirFor(scope),
       systemPrompt: opts.systemPrompt,
       args: opts.args,
-      env: opts.env,
+      env: {
+        ...opts.env,
+        ...(opts.egressProxyUrl
+          ? {
+              HTTP_PROXY: opts.egressProxyUrl,
+              HTTPS_PROXY: opts.egressProxyUrl,
+              NO_PROXY: "",
+              ...(opts.egressToken ? { PRIME_EGRESS_TOKEN: opts.egressToken } : {}),
+            }
+          : {}),
+      },
     };
   };
 
