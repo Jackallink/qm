@@ -1,0 +1,29 @@
+ARG BASE=qm-sandbox-base:dev
+FROM ${BASE}
+
+COPY aws/microvm-agent/agent.mjs /opt/microvm-agent/agent.mjs
+
+# prime-agent runtime (self-contained bundle; build context "prime" = the
+# prime-agent checkout, see scripts/sandbox-local-build-with-prime.sh)
+COPY --from=prime /packages/coding-agent/dist /opt/prime-agent/dist
+COPY --from=prime /packages/coding-agent/package.json /opt/prime-agent/package.json
+RUN ln -sf /opt/prime-agent/dist/bundle/cli.js /usr/local/bin/prime-agent \
+  && chmod +x /usr/local/bin/prime-agent \
+  && mkdir -p /opt/prime-ext && cd /opt/prime-ext \
+  && npm init -y >/dev/null 2>&1 \
+  && npm install --no-audit --no-fund       '@agentclientprotocol/sdk@^1.3.0' '@silvia-odwyer/photon-node@^0.3.4'       chalk@^5.5.0 cli-highlight@^2.1.11 diff@^9.0.0 extract-zip@^2.0.1       file-type@^21.1.1 glob@^13.0.1 hosted-git-info@^9.0.2 ignore@^7.0.5       jiti@^2.7.0 marked@^15.0.12 minimatch@^10.2.3 proper-lockfile@^4.1.2       strip-ansi@^7.1.0 typebox@^1.1.24 undici@^7.28.0 uuid@^14.0.0       yaml@^2.9.0 zeromq@^6.1.2 \
+  && mkdir -p /opt/prime-agent/dist/node_modules \
+  && cp -r node_modules/* /opt/prime-agent/dist/node_modules/ \
+  && rm -rf /opt/prime-ext
+
+# Prime's IPython kernel venv (created eagerly so first turn isn't slow).
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh   && ln -sf /root/.local/bin/uv /usr/local/bin/uv
+
+RUN python3 -m venv /opt/prime-kernel-venv \
+  && /opt/prime-kernel-venv/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/prime-kernel-venv/bin/pip install --no-cache-dir ipykernel
+
+ENV HOME=/root
+WORKDIR /root
+EXPOSE 8080
+CMD ["node", "/opt/microvm-agent/agent.mjs"]
