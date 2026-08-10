@@ -1,0 +1,200 @@
+/**
+ * Prime Agent harness adapter.
+ *
+ * Registers prime-agent (the RLM execution kernel) as a first-class QM
+ * harness engine over its `--mode rpc` protocol (JSONL over stdio).
+ *
+ * Design notes (see docs/prime-integration / P0 调研报告):
+ * - One prime-agent child process per QM scope, with --session-dir isolated
+ *   per scope (multi-tenant file boundary). Processes are lazily spawned and
+ *   re-created on crash.
+ * - runTurn maps to RPC prompt → stream until agent_end → assemble reply from
+ *   text_delta events. `cancel` (AbortSignal) aborts the RPC prompt.
+ * - systemPrompt is injected at process spawn via --system-prompt (QM org
+ *   soul). Turn-level system prompt deltas are ignored for now (a real
+ *   per-turn injection would go through a session pre-seed).
+ * - extension_ui_request dialogs (select/confirm/input/editor) are answered
+ *   with `cancelled` by default so they never block; wiring may supply a
+ *   custom onExtensionUiRequest to bridge into QM's approval flow.
+ */
+import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnResult } from "./harness.ts";
+import type { ScopeId } from "../types.ts";
+import { PrimeRpcClient, type PrimeRpcClientOptions, type RpcExtensionUiRequest } from "./prime-rpc-client.ts";
+
+export interface PrimeHarnessOptions {
+  /** prime-agent CLI entry. If it ends with .js/.mjs it is run via `node`. */
+  primeBin?: string;
+  /** Working directory for the agent process. */
+  cwd?: string;
+  /** Default provider (e.g. "deepseek"). */
+  provider?: string;
+  /** Default model (e.g. "deepseek-v4-flash"). */
+  model?: string;
+  /** Resolve provider/model per scope (falls back to provider/model). */
+  resolveProviderModel?: (scope: ScopeId) => { provider?: string; model?: string };
+  /** Per-scope session dirs live under this base. */
+  sessionDirBase?: string;
+  /** Base org system prompt (soul). Injected at spawn. */
+  systemPrompt?: string;
+  /** Context token budget reported to QM. Defaults to 200_000. */
+  contextTokenBudget?: number;
+  /** Reset (new_session) on harness switch, clearing IPython state. Default true. */
+  kernelResetOnSwitch?: boolean;
+  /** Bridge for extension UI requests (approval flow). */
+  onExtensionUiRequest?: (request: RpcExtensionUiRequest, scope: ScopeId) => void | Promise<void>;
+  /** Extra CLI args for the prime-agent process. */
+  args?: string[];
+  /** Extra env for the prime-agent process. */
+  env?: Record<string, string>;
+}
+
+const DEFAULT_BUDGET = 200_000;
+
+export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
+  const clients = new Map<string, PrimeRpcClient>();
+
+  const resolveProviderModel = (scope: ScopeId): { provider?: string; model?: string } => ({
+    provider: opts.provider,
+    model: opts.model,
+    ...(opts.resolveProviderModel ? opts.resolveProviderModel(scope) : {}),
+  });
+
+  const sessionDirFor = (scope: ScopeId): string | undefined => {
+    if (!opts.sessionDirBase) return undefined;
+    const safe = scope.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return `${opts.sessionDirBase.replace(/\/$/, "")}/${safe}`;
+  };
+
+  const clientOptions = (scope: ScopeId): PrimeRpcClientOptions => {
+    const { provider, model } = resolveProviderModel(scope);
+    return {
+      cliPath: opts.primeBin ?? "prime-agent",
+      cwd: opts.cwd,
+      provider,
+      model,
+      sessionDir: sessionDirFor(scope),
+      systemPrompt: opts.systemPrompt,
+      args: opts.args,
+      env: opts.env,
+      onExtensionUiRequest: (request) => opts.onExtensionUiRequest?.(request, scope),
+    };
+  };
+
+  const getClient = async (scope: ScopeId): Promise<PrimeRpcClient> => {
+    let client = clients.get(scope);
+    if (!client || client.exited) {
+      if (client) clients.delete(scope);
+      client = new PrimeRpcClient(clientOptions(scope));
+      await client.start();
+      clients.set(scope, client);
+    }
+    return client;
+  };
+
+  const teardown = async (): Promise<void> => {
+    await Promise.allSettled([...clients.values()].map((c) => c.stop()));
+    clients.clear();
+  };
+
+  const handleExtensionUiRequest = async (
+    request: RpcExtensionUiRequest,
+    scope: ScopeId,
+    input: HarnessTurnInput,
+  ): Promise<void> => {
+    // Approval bridge hook (wiring-level). Default: auto-cancel dialogs so a
+    // headless turn never blocks on an unanswered select/confirm/input.
+    if (opts.onExtensionUiRequest) {
+      await opts.onExtensionUiRequest(request, scope);
+      return;
+    }
+    // Default: deny dialogs (treat as cancelled) — strict posture semantics
+    // will come with the real bridge in a later iteration.
+    if (request.method === "notify" || request.method === "setStatus" || request.method === "setWidget") return;
+    void input;
+  };
+
+  return defineHarness(
+    {
+      id: "prime",
+      controlTransport: "json-rpc",
+      toolTransport: "in-process",
+      transcriptFormat: "jsonl",
+      capabilities: new Set(["abort", "steer", "images", "thinking-level", "fast-mode"]),
+    },
+    {
+      async runTurn(input: HarnessTurnInput): Promise<HarnessTurnResult> {
+        const scope = input.scopeLabel;
+        const client = await getClient(scope);
+        const pendingApprovals: HarnessTurnResult["pendingApprovals"] = [];
+        const extensionBridge = clientOptions(scope).onExtensionUiRequest;
+
+        // Forward streaming deltas / tool progress to QM callbacks.
+        const prevOnEvent = client["options"]?.onEvent as ((e: unknown) => void) | undefined;
+        client["options"].onEvent = (event: unknown) => {
+          const e = event as { type: string; assistantMessageEvent?: { type: string; delta?: string }; toolName?: string };
+          if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta" && e.assistantMessageEvent.delta) {
+            input.onDelta?.(e.assistantMessageEvent.delta);
+          }
+          if (e.type === "tool_execution_start") {
+            input.onProgress?.({ toolCalls: 1 });
+          }
+          prevOnEvent?.(event);
+        };
+        // extension UI requests need the turn input for the approval bridge.
+        (client["options"] as { onExtensionUiRequest?: (r: RpcExtensionUiRequest) => void | Promise<void> }).onExtensionUiRequest = (
+          request,
+        ) => handleExtensionUiRequest(request, scope, input);
+
+        try {
+          const result = await client.promptAndCollect(input.input, {
+            streamingBehavior: "steer",
+            ...(input.images?.length ? { images: input.images } : {}),
+            signal: input.cancel,
+            timeoutMs: 300_000,
+          });
+          const reply = result.reply.trim();
+          return {
+            reply,
+            modelCalls: result.toolCalls + 1,
+            ...(pendingApprovals.length ? { pendingApprovals } : {}),
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (input.cancel?.aborted) {
+            return { reply: "", stopped: true, modelCalls: 0 };
+          }
+          return {
+            reply: `[prime harness] turn failed: ${message}`,
+            modelCalls: 0,
+          };
+        } finally {
+          client["options"].onEvent = prevOnEvent;
+          (client["options"] as { onExtensionUiRequest?: unknown }).onExtensionUiRequest = extensionBridge;
+        }
+      },
+
+      async close(): Promise<void> {
+        await teardown();
+      },
+
+      async resetSession(sessionId: string): Promise<void> {
+        // Called by QM when the harness choice changes for a session.
+        if (opts.kernelResetOnSwitch === false) return;
+        for (const client of clients.values()) {
+          try {
+            await client.newSession(sessionId);
+          } catch {
+            // a dead process will be re-created lazily on the next turn
+          }
+        }
+      },
+
+      contextTokenBudget(): number | undefined {
+        return opts.contextTokenBudget ?? DEFAULT_BUDGET;
+      },
+    },
+    {
+      name: (coreName) => (coreName === "execute" ? "prime_execute" : coreName),
+    },
+  );
+}

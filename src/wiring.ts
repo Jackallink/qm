@@ -169,6 +169,7 @@ import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/o
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
+import { createPrimeHarness } from "./harness/prime-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import type { Harness } from "./harness/harness.ts";
 import { createSecurityScreenProxy, type SecurityScreener } from "./security/security-screener.ts";
@@ -767,6 +768,16 @@ export function buildApp(
     ],
     ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks })],
     ["claude", createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks })],
+    [
+      "prime",
+      createPrimeHarness({
+        primeBin: config.primeBinPath,
+        provider: "deepseek",
+        model: config.primeModel ?? "deepseek-v4-flash",
+        sessionDirBase: config.primeSessionDir,
+        systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
+      }),
+    ],
     ["mock", createMockHarness()],
   ]);
   const fallbackHarness = config.harness as HarnessId;
