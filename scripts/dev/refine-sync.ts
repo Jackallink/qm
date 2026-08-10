@@ -21,7 +21,7 @@ function sign(secret: string, ts: number, canonical: string): string {
   return `v0=${createHmac("sha256", secret).update(`v0:${ts}:${canonical}`).digest("hex")}`;
 }
 
-async function qmPost(path, body) {
+async function qmPost(path: string, body: Record<string, unknown>) {
   const b = JSON.stringify(body);
   const ts = Math.floor(Date.now() / 1000);
   const canonical = `POST\n${path}\n${b}`;
@@ -63,7 +63,10 @@ async function main() {
   console.log("turn2 完成:", t2.reply.slice(0, 60));
 
   console.log("\n== 2. 触发 refine ==");
-  const refineRes = await client.send({ type: "refine", instructions: "请沉淀本次会话中值得复用的编码经验为 skill。" }, { timeoutMs: 600_000 });
+  const refineRes = await client.send(
+    { type: "refine", instructions: "请沉淀本次会话中值得复用的编码经验为 skill。" } as Parameters<typeof client.send>[0],
+    { timeoutMs: 600_000 },
+  );
   console.log("refine success:", refineRes.success);
   if (!refineRes.success) {
     console.log("error:", refineRes.error);
