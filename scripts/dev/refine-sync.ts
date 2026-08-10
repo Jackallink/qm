@@ -73,25 +73,25 @@ async function main() {
     await client.stop();
     process.exit(1);
   }
-  const data = refineRes.data;
+  const data = (refineRes.data ?? {}) as Record<string, unknown>;
   console.log("refine id:", data?.id);
-  console.log("summary:", (data?.summary ?? "").slice(0, 200));
+  console.log("summary:", String(data?.summary ?? "").slice(0, 200));
   console.log("harnessStatePath:", data?.harnessStatePath);
-  console.log("appliedEdits:", (data?.appliedEdits ?? []).length);
+  console.log("appliedEdits:", ((data?.appliedEdits as unknown[] | undefined) ?? []).length);
 
   console.log("\n== 3. 读取 harness state，提取 skill entries ==");
   let skills = [];
   try {
-    const raw = readFileSync(data.harnessStatePath, "utf8");
-    const hs = JSON.parse(raw);
+    const raw = readFileSync(String(data.harnessStatePath), "utf8");
+    const hs = JSON.parse(raw) as { entries?: { skill?: Record<string, { scope?: string; title?: string; content?: string; metadata?: Record<string, unknown> }> } };
     const skillEntries = Object.values(hs.entries?.skill ?? {});
     console.log("skill entries:", skillEntries.length);
     for (const e of skillEntries.slice(0, 5)) {
-      console.log(`- [${e.scope ?? "local"}] ${e.title} (${(e.content ?? "").length} chars)`);
+      console.log(`- [${e.scope ?? "local"}] ${e.title ?? "untitled"} (${(e.content ?? "").length} chars)`);
       skills.push(e);
     }
   } catch (e) {
-    console.log("harness state 读取失败:", e.message);
+    console.log("harness state 读取失败:", (e as Error).message);
   }
 
   console.log("\n== 4. 导入 QM skills ==");
@@ -99,16 +99,17 @@ async function main() {
     const payload = {
       principalId: "jakeliu",
       scopeId: "personal:jakeliu",
-      name: s.title.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 60),
-      description: (s.metadata?.description ?? s.title ?? "").slice(0, 200),
+      name: (s.title ?? "skill").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 60),
+      description: String(s.metadata?.description ?? s.title ?? "").slice(0, 200),
       body: s.content ?? "",
     };
     if (DRY) {
       console.log(`[dry-run] would import: ${payload.name}`);
       continue;
     }
-    const r = await qmPost("/v1/skills", payload);
-    console.log(`import '${payload.name}' → HTTP ${r.status}`, r.body?.id ? `(id: ${r.body.id})` : JSON.stringify(r.body).slice(0, 120));
+    const r = await qmPost("/v1/skills", payload as unknown as Record<string, unknown>);
+    const body = r.body as { id?: string };
+    console.log(`import '${payload.name}' → HTTP ${r.status}`, body?.id ? `(id: ${body.id})` : JSON.stringify(r.body).slice(0, 120));
   }
 
   await client.stop();
