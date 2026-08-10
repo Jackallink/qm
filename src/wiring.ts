@@ -731,6 +731,7 @@ export function buildApp(
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
+  const approvalGrants: DurableMap<CommandApprovalGrant> = artifactMap<CommandApprovalGrant>("approval_grants");
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
@@ -775,6 +776,15 @@ export function buildApp(
         provider: "deepseek",
         model: config.primeModel ?? "deepseek-v4-flash",
         sessionDirBase: config.primeSessionDir,
+        args: config.primeArgs ? config.primeArgs.split(",").filter(Boolean) : undefined,
+        resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
+          const grants = await approvalGrants.all();
+          return grants.some((g) => {
+            if (g.approvalKey !== approvalKey) return false;
+            if (g.scope === "always") return true;
+            return g.scope === "session" && g.sessionId === sessionId;
+          });
+        },
         systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
       }),
     ],
@@ -1006,7 +1016,7 @@ export function buildApp(
     serviceCreds: credentialStore,
     deliveries,
     approvals,
-    approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
+    approvalGrants,
     ...(processes ? { processes } : {}),
     monitors,
     crons,

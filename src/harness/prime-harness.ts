@@ -42,6 +42,12 @@ export interface PrimeHarnessOptions {
   kernelResetOnSwitch?: boolean;
   /** Bridge for extension UI requests (approval flow). */
   onExtensionUiRequest?: (request: RpcExtensionUiRequest, scope: ScopeId) => void | Promise<void>;
+  /**
+   * Check whether an approval grant exists for (scope, session, approvalKey).
+   * Used when QM does not provide a toolApprovalGate (non-strict postures),
+   * so previously approved operations auto-confirm instead of re-prompting.
+   */
+  resolveApprovalGrant?: (scope: ScopeId, sessionId: string, approvalKey: string) => Promise<boolean>;
   /** Extra CLI args for the prime-agent process. */
   args?: string[];
   /** Extra env for the prime-agent process. */
@@ -100,31 +106,41 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     request: RpcExtensionUiRequest,
     scope: ScopeId,
     input: HarnessTurnInput,
+    pendingApprovals: NonNullable<HarnessTurnResult["pendingApprovals"]>,
   ): Promise<void> => {
     // One-way UI updates never block the turn.
     if (request.method === "notify" || request.method === "setStatus" || request.method === "setWidget") return;
     if (request.method === "setTitle" || request.method === "set_editor_text") return;
     // Dialog requests (select/confirm/input/editor): bridge into QM's approval
-    // gate. Approved tools are auto-confirmed (Auto posture grants); anything
-    // else is denied by cancelling so a headless turn never blocks.
+    // gate. Approved tools are auto-confirmed (Auto posture grants); a denied
+    // dialog is cancelled AND recorded as a pending approval so the user can
+    // grant it for future turns (QM's grant→retry model).
     const label = [request.title, request.message].filter(Boolean).join(" — ") || request.method;
+    const approvalKey = `tool:${label}`;
     const gate = input.toolApprovalGate;
-    if (gate && gate(`tool:${label}`)) {
+    const granted = gate
+      ? gate(approvalKey)
+      : opts.resolveApprovalGrant
+        ? await opts.resolveApprovalGrant(scope, input.session.id, approvalKey)
+        : false;
+    if (granted) {
       if (request.method === "confirm") {
         await client.respondExtensionUi(request.id, { confirmed: true });
       } else if (request.method === "select" && request.options?.length) {
         await client.respondExtensionUi(request.id, { value: request.options[0]! });
-      } else if (request.method === "input") {
-        await client.respondExtensionUi(request.id, { value: "" });
       } else {
         await client.respondExtensionUi(request.id, { value: "" });
       }
       return;
     }
-    if (opts.onExtensionUiRequest) {
-      await opts.onExtensionUiRequest(request, scope);
-      return;
-    }
+    // Denied by gate (or no gate → conservative deny). Record for approval UI.
+    pendingApprovals.push({
+      command: label,
+      reason: request.method === "confirm" ? "prime agent requests confirmation" : `prime agent requests ${request.method}`,
+      approvalKey,
+      kind: "approval",
+      purpose: label,
+    });
     await client.respondExtensionUi(request.id, { cancelled: true });
   };
 
@@ -159,7 +175,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
         };
         // extension UI requests need the turn input for the approval gate.
         (client["options"] as { onExtensionUiRequest?: (r: RpcExtensionUiRequest) => void | Promise<void> }).onExtensionUiRequest =
-          (request) => handleExtensionUiRequest(client, request, scope, input);
+          (request) => handleExtensionUiRequest(client, request, scope, input, pendingApprovals);
 
         try {
           const started = Date.now();

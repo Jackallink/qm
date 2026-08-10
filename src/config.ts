@@ -47,6 +47,7 @@ export interface Config {
   primeModel?: string;
   primeBinPath?: string;
   primeSessionDir?: string;
+  primeArgs?: string;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;
@@ -730,6 +731,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.PRIME_MODEL ? { primeModel: env.PRIME_MODEL } : {}),
     ...(env.PRIME_BIN ? { primeBinPath: env.PRIME_BIN } : {}),
     ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
+    ...(env.PRIME_ARGS ? { primeArgs: env.PRIME_ARGS } : {}),
     ...(env.PI_DETECT_MODEL ? { detectModelId: env.PI_DETECT_MODEL } : {}),
     ...(env.PI_TITLE_MODEL ? { titleModelId: env.PI_TITLE_MODEL } : {}),
     ...(env.PI_JUDGE_MODEL ? { judgeModelId: env.PI_JUDGE_MODEL } : {}),
