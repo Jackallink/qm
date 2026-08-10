@@ -19,7 +19,9 @@
  */
 import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnResult } from "./harness.ts";
 import type { ScopeId } from "../types.ts";
+import type { Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { PrimeRpcClient, type PrimeRpcClientOptions, type RpcExtensionUiRequest } from "./prime-rpc-client.ts";
+import { createSandboxProcessIo } from "./prime-rpc-io-sandbox.ts";
 
 export interface PrimeHarnessOptions {
   /** prime-agent CLI entry. If it ends with .js/.mjs it is run via `node`. */
@@ -60,6 +62,21 @@ export interface PrimeHarnessOptions {
    */
   egressProxyUrl?: string;
   egressToken?: string;
+  /**
+   * Run prime inside a QM sandbox (local docker / sprites / AWS MicroVM)
+   * instead of a host child process. When set, prime's RPC process is
+   * started via sandbox.startProcess and I/O bridged through
+   * readProcess/writeStdin (see prime-rpc-io-sandbox.ts).
+   */
+  sandbox?: {
+    sandbox: Sandbox;
+    /** Provision/resolve the per-scope sandbox handle (wiring-owned). */
+    handleFor(scope: ScopeId): Promise<SandboxHandle>;
+    /** prime CLI path inside the sandbox. */
+    cliPath?: string;
+    /** Session dir base inside the sandbox (default: handle rootDir). */
+    sessionDirBase?: string;
+  };
 }
 
 const DEFAULT_BUDGET = 200_000;
@@ -82,7 +99,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   const clientOptions = (scope: ScopeId): PrimeRpcClientOptions => {
     const { provider, model } = resolveProviderModel(scope);
     return {
-      cliPath: opts.primeBin ?? "prime-agent",
+      cliPath: opts.sandbox?.cliPath ?? opts.primeBin ?? "prime-agent",
       cwd: opts.cwd ?? sessionDirFor(scope),
       provider,
       model,
@@ -103,11 +120,38 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     };
   };
 
+  const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
+  /** Build the prime RPC command line that runs inside the sandbox. */
+  const sandboxCommandFor = (scope: ScopeId): string => {
+    const { provider, model } = resolveProviderModel(scope);
+    const cliPath = opts.sandbox!.cliPath ?? "/opt/prime-agent/dist/bundle/cli.js";
+    const safe = scope.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sessionDir = `${opts.sandbox!.sessionDirBase ?? "$HOME"}/prime-sessions/${safe}`;
+    const args: string[] = ["--mode", "rpc"];
+    if (provider) args.push("--provider", provider);
+    if (model) args.push("--model", model);
+    args.push("--session-dir", sessionDir);
+    if (opts.systemPrompt) args.push("--system-prompt", opts.systemPrompt);
+    if (opts.args) args.push(...opts.args);
+    return `node ${shellQuote(cliPath)} ${args.map((a) => (a.startsWith("-") ? a : shellQuote(a))).join(" ")}`;
+  };
+
   const getClient = async (scope: ScopeId): Promise<PrimeRpcClient> => {
     let client = clients.get(scope);
     if (!client || client.exited) {
       if (client) clients.delete(scope);
-      client = new PrimeRpcClient(clientOptions(scope));
+      const optsForScope = clientOptions(scope);
+      if (opts.sandbox) {
+        const handle = await opts.sandbox.handleFor(scope);
+        optsForScope.io = createSandboxProcessIo({
+          sandbox: opts.sandbox.sandbox,
+          handle,
+          command: sandboxCommandFor(scope),
+          env: optsForScope.env,
+        });
+      }
+      client = new PrimeRpcClient(optsForScope);
       await client.start();
       clients.set(scope, client);
     }
