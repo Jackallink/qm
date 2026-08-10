@@ -17,7 +17,7 @@ const SECRET = process.env.CORE_SIGNING_SECRET || "qm-dev-signing-secret-for-min
 const BASE = process.env.QM_CORE_URL || "http://localhost:8081";
 const DRY = process.argv.includes("--dry-run");
 
-function sign(secret, ts, canonical) {
+function sign(secret: string, ts: number, canonical: string): string {
   return `v0=${createHmac("sha256", secret).update(`v0:${ts}:${canonical}`).digest("hex")}`;
 }
 
