@@ -78,7 +78,6 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "DELETE", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: deleteAgent },
   { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
   { method: "GET", path: "/v1/admin/agents/:agentId/health", auth: "either", handle: agentHealth },
-  { method: "POST", path: "/v1/admin/agents/:agentId/heartbeat", auth: "either", handle: agentHealthHeartbeat },
   // Emergency
   { method: "POST", path: "/v1/admin/emergency/skills/:skillId/disable", auth: "either", handle: disableSkill },
   { method: "POST", path: "/v1/admin/emergency/agents/:agentId/revoke-tokens", auth: "either", handle: revokeTokens },

@@ -216,7 +216,7 @@ export const agentRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/agents/running", auth: "either", handle: listRunning },
   { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
   { method: "GET", path: "/v1/admin/agents/:id/health", auth: "either", handle: agentHealth },
-  { method: "POST", path: "/v1/admin/agents/:id/heartbeat", auth: "either", handle: agentHealthHeartbeat },
+  { method: "POST", path: "/v1/admin/agents/:id/control-heartbeat", auth: "either", handle: agentHealthHeartbeat },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: listAgents },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: getAgent },
   { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
