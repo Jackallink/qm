@@ -89,7 +89,7 @@ fi
 
 # ---- result ----
 echo
-if [ $FAIL -eq 0 ]; then
+if [ "${FAIL:-0}" -eq 0 ]; then
   echo "[OK] P0 CI: all checks passed"
   exit 0
 else

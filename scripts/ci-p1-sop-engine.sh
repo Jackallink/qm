@@ -27,4 +27,4 @@ if curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://localhost:8081/ 2>
     if echo "$H" | grep -q '"done"'; then echo "    [PASS] sop sign + history"; else echo "    [FAIL] sop sign"; FAIL=1; fi
   else echo "    [FAIL] sop create"; FAIL=1; fi
 else echo "    [SKIP] core not running"; fi
-echo; [ $FAIL -eq 0 ] && echo "[OK] P1 CI" || echo "[FAIL] P1 CI"; exit $FAIL
+echo; [ "${FAIL:-0}" -eq 0 ] && echo "[OK] P1 CI" || echo "[FAIL] P1 CI"; exit ${FAIL:-0}

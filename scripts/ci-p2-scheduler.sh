@@ -8,4 +8,4 @@ const c = DEFAULT_SCHEDULER_CONFIG;
 const ok = c.maxCatchupRuns === 3 && c.maxConsecutiveFailures === 5 && c.loopThreshold === 5;
 console.log(ok ? "config OK" : "FAIL"); process.exit(ok ? 0 : 1);
 ' 2>/dev/null && echo "    [PASS] unit" || { echo "    [FAIL] unit"; FAIL=1; }
-echo; [ $FAIL -eq 0 ] && echo "[OK] P2 CI" || echo "[FAIL] P2 CI"; exit $FAIL
+echo; if [ "${FAIL:-0}" -eq 0 ]; then echo "[OK] P2 CI"; exit 0; else echo "[FAIL] P2 CI"; exit 1; fi

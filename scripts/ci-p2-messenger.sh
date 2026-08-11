@@ -11,4 +11,4 @@ const ok = c.timeWindowMs > 0 && c.maxRetries === 3 && c.loopThreshold === 5;
 console.log(ok ? "config OK" : "FAIL");
 process.exit(ok ? 0 : 1);
 ' 2>/dev/null && echo "    [PASS] unit" || { echo "    [FAIL] unit"; FAIL=1; }
-echo; [ $FAIL -eq 0 ] && echo "[OK] P2 CI" || echo "[FAIL] P2 CI"; exit $FAIL
+echo; [ "${FAIL:-0}" -eq 0 ] && echo "[OK] P2 CI" || echo "[FAIL] P2 CI"; exit ${FAIL:-0}
