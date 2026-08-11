@@ -240,13 +240,18 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
       const data = (refineResp.data ?? {}) as { harnessStatePath?: string };
       const statePath = data.harnessStatePath;
       if (!statePath) return;
-      // Read the harness state file (via the same sandbox.io/host fs).
-      // In child mode it lives on the host; in sandbox mode it is inside
-      // the container and a separate sandbox.run would be needed. For the
-      // MVP we only support child mode (file lives on the host).
-      if (opts.sandbox) return; // TODO: sandbox-mode state read
-      const { readFileSync } = await import("node:fs");
-      const raw = readFileSync(statePath, "utf8");
+      // Read the harness state file.
+      let raw: string;
+      if (opts.sandbox) {
+        // Sandbox mode: exec a cat inside the container via sandbox.run.
+        const handle = await opts.sandbox.handleFor(scope);
+        const catRes = await opts.sandbox.sandbox.run(handle, `cat ${statePath}`, { timeoutMs: 15_000 });
+        if (catRes.code !== 0) return;
+        raw = catRes.stdout;
+      } else {
+        const { readFileSync } = await import("node:fs");
+        raw = readFileSync(statePath, "utf8");
+      }
       const hs = JSON.parse(raw) as { entries?: { skill?: Record<string, { title?: string; content?: string; metadata?: Record<string, unknown> }> } };
       const skills = Object.values(hs.entries?.skill ?? {});
       for (const s of skills) {
