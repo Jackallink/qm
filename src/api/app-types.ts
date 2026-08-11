@@ -473,6 +473,7 @@ export interface AppDeps {
   refreshCustomProviders?: () => Promise<void>;
   agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
   sopStore?: import("../agent/sop-store.ts").SopRunStore;
+  messengerStore?: import("../agent/messenger-store.ts").MessengerStore;
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;
