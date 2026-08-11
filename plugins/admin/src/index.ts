@@ -396,7 +396,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (method === "GET" && pathname === "/agents") {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(AGENT_PANEL_HTML);
+    const agentHash = createHash("sha256").update(AGENT_PANEL_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "").digest("base64");
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": `default-src 'self'; script-src 'sha256-${agentHash}'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'`,
+    }).end(AGENT_PANEL_HTML);
     return;
   }
   if (pathname.startsWith("/api/scopes/")) {
