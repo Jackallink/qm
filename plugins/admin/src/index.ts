@@ -29,6 +29,10 @@ const BASE_HTML = readFileSync(
   "utf8",
 ).replaceAll("__ADMIN_BASE__", () => ADMIN_BASE_PATH);
 const ADMIN_SCRIPT = BASE_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+const AGENT_PANEL_HTML = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../public/agent-panel.html"),
+  "utf8",
+);
 const ADMIN_CSP = [
   "default-src 'self'",
   `script-src 'sha256-${createHash("sha256").update(ADMIN_SCRIPT).digest("base64")}'`,
@@ -361,6 +365,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (method === "GET" && pathname === "/api/connector-catalog") {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/connectors/catalog");
+  }
+
+  // Agent Management Panel
+  if (method === "GET" && pathname === "/agents") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(AGENT_PANEL_HTML);
+    return;
   }
   if (pathname.startsWith("/api/scopes/")) {
     if (!principal) return json(res, 401, { error: "signed_out" });
