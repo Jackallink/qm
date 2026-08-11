@@ -169,6 +169,7 @@ import { createMockHarness } from "./harness/mock-harness.ts";
 import { createAgentRegistryStore } from "./agent/agent-registry.ts";
 import { createSopRunStore } from "./agent/sop-store.ts";
 import { createMessengerStore } from "./agent/messenger-store.ts";
+import { createSchedulerStore } from "./agent/scheduler-store.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
@@ -331,6 +332,7 @@ export interface BuiltApp {
   agentRegistry: import("./agent/agent-registry.ts").AgentRegistryStore;
   sopStore: import("./agent/sop-store.ts").SopRunStore;
   messengerStore: import("./agent/messenger-store.ts").MessengerStore;
+  schedulerStore: import("./agent/scheduler-store.ts").SchedulerStore;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -742,6 +744,7 @@ export function buildApp(
   const agentRegistry = createAgentRegistryStore(artifactMap("agent_registry"));
   const sopStore = createSopRunStore(artifactMap("sop_runs"));
   const messengerStore = createMessengerStore(artifactMap("agent_messages"), artifactMap("agent_subscriptions"));
+  const schedulerStore = createSchedulerStore(artifactMap("scheduled_jobs"));
   // Per-scope prime sandbox handles (provision once, reuse across turns).
   // Mirrors orchestrator's provision layers: org read-only global + scope rw.
   const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
@@ -1213,6 +1216,7 @@ export function buildApp(
     agentRegistry,
     sopStore,
     messengerStore,
+    schedulerStore,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
     acl,
     admin,
@@ -1552,6 +1556,7 @@ export function buildApp(
     sopStore,
     refreshCustomProviders,
     messengerStore,
+    schedulerStore,
     acl,
     skills,
     skillBundles,

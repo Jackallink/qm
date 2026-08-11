@@ -87,6 +87,7 @@ export interface ServerDeps {
   agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
   sopStore?: import("../agent/sop-store.ts").SopRunStore;
   messengerStore?: import("../agent/messenger-store.ts").MessengerStore;
+  schedulerStore?: import("../agent/scheduler-store.ts").SchedulerStore;
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   harnessId?: string;
   admin?: AdminService;

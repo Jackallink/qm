@@ -474,6 +474,7 @@ export interface AppDeps {
   agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
   sopStore?: import("../agent/sop-store.ts").SopRunStore;
   messengerStore?: import("../agent/messenger-store.ts").MessengerStore;
+  schedulerStore?: import("../agent/scheduler-store.ts").SchedulerStore;
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;

@@ -38,6 +38,7 @@ const server = createServer(built.app, {
   agentRegistry: built.agentRegistry,
   sopStore: built.sopStore,
   messengerStore: built.messengerStore,
+  schedulerStore: built.schedulerStore,
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,
