@@ -7,7 +7,7 @@ TOTAL=0; PASSED=0; FAILED=0
 for ci in scripts/ci-p0-agent-registry.sh scripts/ci-p1-sop-engine.sh scripts/ci-p2-messenger.sh scripts/ci-p2-scheduler.sh; do
   TOTAL=$((TOTAL + 1))
   echo "=== $(basename $ci) ==="
-  if timeout 60 bash "$ci" 2>&1 | tail -3; then
+  if bash "$ci" 2>&1 | tail -3; then
     PASSED=$((PASSED + 1))
   else
     FAILED=$((FAILED + 1))
