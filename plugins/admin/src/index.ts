@@ -375,8 +375,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!principal) return json(res, 401, { error: "signed_out" });
     const corePath = pathname.replace("/api/agents", "/v1/admin");
     try {
+      const body = method === "GET" || method === "DELETE" ? "" : (await readBody(req));
       const r = await fetch(`${CORE}${corePath}`, {
-        headers: { ...signedHeaders(method, corePath, ""), "x-admin-actor": `${principal}@${ORG}`, ...portalIdentityHeader() },
+        method,
+        headers: { ...signedHeaders(method, corePath, body), "x-admin-actor": `${principal}@${ORG}`, ...portalIdentityHeader(), "content-type": "application/json" },
+        body: body || undefined,
       });
       const data = await r.text();
       res.writeHead(r.status, { "content-type": "application/json" }).end(data);
