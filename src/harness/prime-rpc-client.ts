@@ -234,6 +234,14 @@ export class PrimeRpcClient {
         );
       }
       io.write(serializeJsonLine(fullCommand));
+      // One-shot sandbox io: each send executes the accumulated batch once
+      // (pipe with stdin EOF so prime emits agent_end normally). The
+      // response/events arrive via onData after execution, so this is
+      // fire-and-forget; the pending request resolves when handleLine sees
+      // the correlated response line.
+      if (io.kind === "sandbox-one-shot") {
+        void io.executeAll?.().catch(() => undefined);
+      }
     });
   }
 
@@ -311,7 +319,12 @@ export class PrimeRpcClient {
         { timeoutMs: opts.timeoutMs ?? 60_000, signal: opts.signal },
       );
       this.requireSuccess(r);
-      await this.waitForEvent("agent_end", opts.timeoutMs ?? 120_000, opts.signal);
+      // One-shot io: the response and the whole event stream arrive together
+      // after execution, so agent_end may already be in `events` by the time
+      // send resolves — don't wait for an event that already happened.
+      if (!events.some((e) => e.type === "agent_end")) {
+        await this.waitForEvent("agent_end", opts.timeoutMs ?? 120_000, opts.signal);
+      }
     } finally {
       this.options.onEvent = prev;
     }

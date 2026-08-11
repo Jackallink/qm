@@ -19,6 +19,8 @@ export interface PrimeRpcIo {
   onExit(listener: (code: number | null) => void): () => void;
   kill(): Promise<void>;
   stderrTail(): string;
+  /** One-shot ios: execute the accumulated input batch (pipe mode). */
+  executeAll?(): Promise<void>;
 }
 
 export interface ChildProcessIoOptions {

@@ -21,7 +21,7 @@ import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnRes
 import type { ScopeId } from "../types.ts";
 import type { Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { PrimeRpcClient, type PrimeRpcClientOptions, type RpcExtensionUiRequest } from "./prime-rpc-client.ts";
-import { createSandboxProcessIo } from "./prime-rpc-io-sandbox.ts";
+import { createSandboxOneShotIo } from "./prime-rpc-io-sandbox.ts";
 
 export interface PrimeHarnessOptions {
   /** prime-agent CLI entry. If it ends with .js/.mjs it is run via `node`. */
@@ -132,6 +132,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     if (provider) args.push("--provider", provider);
     if (model) args.push("--model", model);
     args.push("--session-dir", sessionDir);
+    args.push("--continue");
     if (opts.systemPrompt) args.push("--system-prompt", opts.systemPrompt);
     if (opts.args) args.push(...opts.args);
     return `node ${shellQuote(cliPath)} ${args.map((a) => (a.startsWith("-") ? a : shellQuote(a))).join(" ")}`;
@@ -144,11 +145,18 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
       const optsForScope = clientOptions(scope);
       if (opts.sandbox) {
         const handle = await opts.sandbox.handleFor(scope);
-        optsForScope.io = createSandboxProcessIo({
+        // One-shot pipe mode (FIFO process sessions are incompatible with
+        // prime's RPC loop — no EOF means agent_end never settles).
+        const envPrefix = Object.entries(optsForScope.env ?? {})
+          .filter(([, v]) => v !== undefined && v !== "")
+          .map(([k, v]) => `${k}=${shellQuote(v!)}`)
+          .join(" ");
+        optsForScope.io = createSandboxOneShotIo({
           sandbox: opts.sandbox.sandbox,
           handle,
           command: sandboxCommandFor(scope),
-          env: optsForScope.env,
+          envPrefix,
+          timeoutMs: 300_000,
         });
       }
       client = new PrimeRpcClient(optsForScope);
@@ -243,7 +251,9 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
           const started = Date.now();
           const statsBefore = await client.getSessionStats().catch(() => null);
           const result = await client.promptAndCollect(input.input, {
-            streamingBehavior: "steer",
+            // One-shot sandbox mode has no live streaming context, so steer
+            // queue semantics don't apply (and would error on a fresh process).
+            ...(opts.sandbox ? {} : { streamingBehavior: "steer" as const }),
             ...(input.images?.length ? { images: input.images } : {}),
             signal: input.cancel,
             timeoutMs: 300_000,

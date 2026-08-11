@@ -57,7 +57,7 @@ async function main() {
   const r2 = await harness.turns.runTurn(mockTurn("刚才计算的结果是什么？只回答数字。", scope));
   console.log("回复:", r2.reply.slice(0, 200));
 
-  console.log("\n== 4. 沙箱内文件验证（结果应已写入容器内 /tmp/sandbox-result.txt） ==");
+  console.log("\n== 4. 沙箱内文件验证 ==");
   const file = await sandbox.readFile(handle, "sandbox-result.txt").catch(() => null);
   console.log("沙箱内 /tmp/sandbox-result.txt:", file ?? "(工作目录未找到，尝试绝对路径)");
   // 直接 exec 查看
