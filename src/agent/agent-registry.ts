@@ -109,7 +109,7 @@ export function createAgentRegistryStore(backing: DurableMap<AgentManifest>): Ag
     async list(workspace: string): Promise<AgentManifest[]> {
       const all = await backing.all();
       const prefix = workspacePrefix(workspace);
-      return all.filter((m) => m.workspace === workspace && m.status !== "draft");
+      return all.filter((m) => m.workspace === workspace);
     },
 
     async delete(workspace: string, agentId: string): Promise<boolean> {
