@@ -49,6 +49,8 @@ export interface Config {
   primeSessionDir?: string;
   primeArgs?: string;
   primeSandbox?: boolean;
+  hermesBaseUrl?: string;
+  hermesModel?: string;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;

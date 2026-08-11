@@ -164,6 +164,7 @@ import { createCustomProviderStore, type CustomProviderStore } from "./model/cus
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import type { SessionStore } from "./sessions/session-store.ts";
+import { createHermesHarness } from "./harness/hermes-harness.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
@@ -851,6 +852,14 @@ export function buildApp(
       }),
     ],
     ["mock", createMockHarness()],
+    [
+      "hermes",
+      createHermesHarness({
+        baseUrl: config.hermesBaseUrl ?? process.env.HERMES_BASE_URL,
+        model: config.hermesModel ?? process.env.HERMES_MODEL,
+        apiKey: process.env.HERMES_API_KEY,
+      }),
+    ],
   ]);
   const fallbackHarness = config.harness as HarnessId;
   const fallback = {
