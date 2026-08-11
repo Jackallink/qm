@@ -736,8 +736,8 @@ export function buildApp(
   // Mirrors orchestrator's provision layers: org read-only global + scope rw.
   const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
   const primeSandboxHandleFor = (scope: ScopeId): Promise<SandboxHandle> => {
-    const existing = primeSandboxHandles.get(scope);
-    if (existing) return existing;
+    // Always provision fresh: QM's sandbox router handles container reuse
+    // internally (keepWarm); cached handles can go stale across core reloads.
     const pending = sandbox
       .provision(
         [
@@ -747,7 +747,6 @@ export function buildApp(
         {},
       )
       .catch((error: unknown) => {
-        primeSandboxHandles.delete(scope);
         throw error;
       });
     primeSandboxHandles.set(scope, pending);

@@ -51,13 +51,12 @@ export function createSandboxOneShotIo(opts: SandboxOneShotIoOptions): PrimeRpcI
     const cleanup =
       'for p in /proc/[0-9]*; do [ "${p#/proc/}" = "$$" ] && continue; ' +
       'c=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null); ' +
-      'case "$c" in *prime-agent*|*bundle/cli.js*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac; done; ' +
+      'case "$c" in *prime-agent*|*bundle/cli.j[s]*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac; done; ' +
       'rm -rf /tmp/prime-agent-0 "$HOME/.prime/agent/daemon-workers" 2>/dev/null';
     const cmd =
       `${cleanup}; echo ${shellQuote(input.trim())} | ${opts.envPrefix ? opts.envPrefix + " " : ""}${opts.command} 2>/dev/null`;
     try {
-      const r = await opts.sandbox.run(opts.handle, cmd, { timeoutMs: opts.timeoutMs ?? 300_000 });
-      const out = r.stdout ?? "";
+      const r = await opts.sandbox.run(opts.handle, cmd, { timeoutMs: opts.timeoutMs ?? 300_000 });       const out = r.stdout ?? "";
       // Emit in chunks so the client's LF framing works identically.
       for (let i = 0; i < out.length; i += 16 * 1024) {
         for (const l of [...listeners]) l(out.slice(i, i + 16 * 1024));
