@@ -38,6 +38,8 @@ import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplat
   agentHealth, agentHealthHeartbeat, allHealth } from "./admin/agents.ts";
 import { listRuns, getRun, createRun, signGate, rollbackGate, getHistory } from "./admin/sop-runs.ts";
 import { sendMessage, getInbox, ackMessage, subscribeEvents, heartbeat } from "./admin/messenger.ts";
+import { disableSkill, revokeTokens, circuitBreak, killSession } from "./admin/emergency.ts";
+import { dashboardSummary, tokenTrends, agentActivity } from "./admin/dashboard.ts";
 import { listJobs, scheduleJob, pauseJob, resumeJob, checkLoop } from "./admin/scheduler.ts";
 
 const timed =
@@ -77,6 +79,15 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
   { method: "GET", path: "/v1/admin/agents/:agentId/health", auth: "either", handle: agentHealth },
   { method: "POST", path: "/v1/admin/agents/:agentId/heartbeat", auth: "either", handle: agentHealthHeartbeat },
+  // Emergency
+  { method: "POST", path: "/v1/admin/emergency/skills/:skillId/disable", auth: "either", handle: disableSkill },
+  { method: "POST", path: "/v1/admin/emergency/agents/:agentId/revoke-tokens", auth: "either", handle: revokeTokens },
+  { method: "POST", path: "/v1/admin/emergency/circuit-break", auth: "either", handle: circuitBreak },
+  { method: "POST", path: "/v1/admin/emergency/sessions/:sessionId/kill", auth: "either", handle: killSession },
+  // Dashboard
+  { method: "GET", path: "/v1/admin/dashboard/summary", auth: "either", handle: dashboardSummary },
+  { method: "GET", path: "/v1/admin/dashboard/token-trends", auth: "either", handle: tokenTrends },
+  { method: "GET", path: "/v1/admin/dashboard/agent-activity", auth: "either", handle: agentActivity },
   { method: "GET", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: listRuns },
   { method: "GET", path: "/v1/sop-runs/:id", auth: "either", handle: getRun },
   { method: "POST", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: createRun },
