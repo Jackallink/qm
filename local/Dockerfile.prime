@@ -16,12 +16,23 @@ RUN ln -sf /opt/prime-agent/dist/bundle/cli.js /usr/local/bin/prime-agent \
   && cp -r node_modules/* /opt/prime-agent/dist/node_modules/ \
   && rm -rf /opt/prime-ext
 
-# Prime's IPython kernel venv (created eagerly so first turn isn't slow).
+# uv (prime's python toolchain for kernel bootstrap)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh   && ln -sf /root/.local/bin/uv /usr/local/bin/uv
 
-RUN python3 -m venv /opt/prime-kernel-venv \
-  && /opt/prime-kernel-venv/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/prime-kernel-venv/bin/pip install --no-cache-dir ipykernel
+# Kernel prewarm: run one real turn at build time so prime bootstraps the
+# complete kernel venv (ipykernel + prime-agent-runtime + dill + extras) and
+# writes the .bootstrap-version marker. The ready venv lands in the image
+# layer, eliminating the 30-108s cold-start on first runtime turn.
+# PRIME_AGENT_KERNEL_VENV is passed at build time; DEEPSEEK_API_KEY is a
+# build arg (not baked into the image).
+ARG DEEPSEEK_API_KEY=
+RUN if [ -n "$DEEPSEEK_API_KEY" ]; then \
+      echo '{"type":"prompt","message":"用 Python 计算 1+1。"}' | \
+      DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" PRIME_AGENT_KERNEL_VENV=/opt/prime-kernel-venv \
+      node /opt/prime-agent/dist/bundle/cli.js --mode rpc --no-session --provider deepseek --model deepseek-v4-flash \
+      2>/dev/null | grep -q agent_end || true; \
+      rm -rf /root/.prime/agent/sessions /root/.prime/agent/telemetry.json /root/.prime/agent/logs /root/.prime/agent/daemon-workers /tmp/prime-agent-0 2>/dev/null || true; \
+    fi
 
 ENV HOME=/root
 WORKDIR /root

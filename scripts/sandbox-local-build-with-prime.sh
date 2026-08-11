@@ -15,8 +15,18 @@ echo "==> building ${BASE_TAG} from fly/Dockerfile (${PLATFORM})"
 docker build --platform "${PLATFORM}" -f fly/Dockerfile -t "${BASE_TAG}" .
 
 echo "==> building ${PRIME_TAG} from local/Dockerfile.prime (prime checkout: ${PRIME_CHECKOUT})"
-docker build --platform "${PLATFORM}" -f local/Dockerfile.prime \
-  --build-context "prime=${PRIME_CHECKOUT}" \
-  -t "${PRIME_TAG}" .
+# PRIME_PREWARM_KEY: set to a provider API key to bootstrap the kernel venv
+# at build time (eliminates first-turn cold start).
+if [ -n "${PRIME_PREWARM_KEY:-}" ]; then
+  docker build --platform "${PLATFORM}" -f local/Dockerfile.prime \
+    --build-context "prime=${PRIME_CHECKOUT}" \
+    --build-arg "DEEPSEEK_API_KEY=${PRIME_PREWARM_KEY}" \
+    -t "${PRIME_TAG}" .
+else
+  echo "    (no PRIME_PREWARM_KEY — kernel will cold-bootstrap on first turn)"
+  docker build --platform "${PLATFORM}" -f local/Dockerfile.prime \
+    --build-context "prime=${PRIME_CHECKOUT}" \
+    -t "${PRIME_TAG}" .
+fi
 
 echo "==> done: ${PRIME_TAG}"
