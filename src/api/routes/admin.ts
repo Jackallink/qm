@@ -34,7 +34,8 @@ import {
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
-import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates } from "./admin/agents.ts";
+import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates,
+  agentHealth, agentHealthHeartbeat, allHealth } from "./admin/agents.ts";
 import { listRuns, getRun, createRun, signGate, rollbackGate, getHistory } from "./admin/sop-runs.ts";
 import { sendMessage, getInbox, ackMessage, subscribeEvents, heartbeat } from "./admin/messenger.ts";
 import { listJobs, scheduleJob, pauseJob, resumeJob, checkLoop } from "./admin/scheduler.ts";
@@ -73,6 +74,9 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
   { method: "PUT", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: updateAgent },
   { method: "DELETE", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: deleteAgent },
+  { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
+  { method: "GET", path: "/v1/admin/agents/:agentId/health", auth: "either", handle: agentHealth },
+  { method: "POST", path: "/v1/admin/agents/:agentId/heartbeat", auth: "either", handle: agentHealthHeartbeat },
   { method: "GET", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: listRuns },
   { method: "GET", path: "/v1/sop-runs/:id", auth: "either", handle: getRun },
   { method: "POST", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: createRun },

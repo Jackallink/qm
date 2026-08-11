@@ -12,8 +12,15 @@ import { AGENT_TEMPLATES } from "../../../agent/agent-manifest.ts";
 import { isValidStatusTransition, newAgentFromTemplate } from "../../../agent/agent-registry.ts";
 import { reviewAgentRegistration } from "../../../agent/registration-pipeline.ts";
 import { launchAgent, stopAgent, getRunningAgents } from "../../../agent/agent-launcher.ts";
+import { initAgentHealth, getAgentHealth, getAllAgentHealth, removeAgentHealth, controlPlaneHeartbeat } from "../../../agent/degraded-mode.ts";
 
 // 查询运行中的 Agent
+// 健康检查
+async function agentHealth(ctx: ApiCtx): Promise<void> { const h = getAgentHealth(ctx.params.id!); return sendJson(ctx.res, h ? 200 : 404, h ? { health: h } : { error: "not_found" }); }
+async function agentHealthHeartbeat(ctx: ApiCtx): Promise<void> { controlPlaneHeartbeat(ctx.params.id!); return sendJson(ctx.res, 200, { ok: true }); }
+async function allHealth(_ctx: ApiCtx): Promise<void> { return sendJson(_ctx.res, 200, { agents: getAllAgentHealth() }); }
+
+export { agentHealth, agentHealthHeartbeat, allHealth };
 export async function listRunning(_ctx: ApiCtx): Promise<void> {
   const running = getRunningAgents();
   return sendJson(_ctx.res, 200, { running });
@@ -146,6 +153,7 @@ export async function updateAgent(ctx: ApiCtx): Promise<void> {
     if (newStatus === "deploying") {
       // 1. 先持久化 deploying 状态
       existing.status = "deploying";
+      initAgentHealth(id);
       await ctx.deps.agentRegistry.put(ws, existing);
       // 2. 真实启动 Agent 进程
       const runtime = await launchAgent(existing);
@@ -156,6 +164,7 @@ export async function updateAgent(ctx: ApiCtx): Promise<void> {
       }
     } else if (newStatus === "stopping") {
       await stopAgent(id);
+      removeAgentHealth(id);
       existing.status = "stopped";
     }
   }
@@ -183,6 +192,7 @@ export async function deleteAgent(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.agentRegistry) return sendJson(ctx.res, 404, { error: "not_found" });
   const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
   if (!authorized) return;
+  removeAgentHealth(id);
   const ok = await ctx.deps.agentRegistry.delete(ws, id);
   if (!ok) return sendJson(ctx.res, 404, { error: "not_found" });
   audit(ctx.deps, {
@@ -204,6 +214,9 @@ export async function getTemplates(_ctx: ApiCtx): Promise<void> {
 export const agentRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/agent-templates", auth: "either", handle: getTemplates },
   { method: "GET", path: "/v1/admin/agents/running", auth: "either", handle: listRunning },
+  { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
+  { method: "GET", path: "/v1/admin/agents/:id/health", auth: "either", handle: agentHealth },
+  { method: "POST", path: "/v1/admin/agents/:id/heartbeat", auth: "either", handle: agentHealthHeartbeat },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: listAgents },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: getAgent },
   { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
