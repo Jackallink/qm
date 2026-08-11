@@ -3,6 +3,9 @@ FROM ${BASE}
 
 COPY aws/microvm-agent/agent.mjs /opt/microvm-agent/agent.mjs
 
+# prime-agent extensions (permission-gate etc.)
+COPY prime-extensions /opt/prime-agent/extensions
+
 # prime-agent runtime (self-contained bundle; build context "prime" = the
 # prime-agent checkout, see scripts/sandbox-local-build-with-prime.sh)
 COPY --from=prime /packages/coding-agent/dist /opt/prime-agent/dist

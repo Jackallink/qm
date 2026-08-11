@@ -148,6 +148,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     if (model) args.push("--model", model);
     args.push("--session-dir", sessionDir);
     args.push("--continue");
+    args.push("--extension", "/opt/prime-agent/extensions/permission-gate.mjs");
     if (opts.systemPrompt) args.push("--system-prompt", opts.systemPrompt);
     if (opts.args) args.push(...opts.args);
     return `node ${shellQuote(cliPath)} ${args.map((a) => (a.startsWith("-") ? a : shellQuote(a))).join(" ")}`;
