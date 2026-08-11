@@ -84,6 +84,7 @@ export interface ServerDeps {
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
+  agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   harnessId?: string;
   admin?: AdminService;

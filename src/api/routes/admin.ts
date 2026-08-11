@@ -34,6 +34,7 @@ import {
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
+import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates } from "./admin/agents.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -62,6 +63,13 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/custom-providers", auth: "either", handle: getCustomProviders },
   { method: "PUT", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: putCustomProvider },
   { method: "DELETE", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: deleteCustomProvider },
+  // Agent registry
+  { method: "GET", path: "/v1/agent-templates", auth: "either", handle: getTemplates },
+  { method: "GET", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: listAgents },
+  { method: "GET", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: getAgent },
+  { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
+  { method: "PUT", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: updateAgent },
+  { method: "DELETE", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: deleteAgent },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },

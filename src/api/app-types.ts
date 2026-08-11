@@ -471,6 +471,7 @@ export interface AppDeps {
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
+  agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;

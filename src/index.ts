@@ -35,6 +35,7 @@ const server = createServer(built.app, {
   modelCredentials: built.modelCredentials,
   customProviders: built.customProviders,
   refreshCustomProviders: built.refreshCustomProviders,
+  agentRegistry: built.agentRegistry,
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,
