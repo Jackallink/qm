@@ -374,10 +374,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (pathname.startsWith("/api/agents/")) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const corePath = pathname.replace("/api/agents", "/v1/admin");
-    return forward(req, res, principal, method, corePath, true);
+    try {
+      const r = await fetch(`${CORE}${corePath}`, {
+        headers: { ...signedHeaders(method, corePath, ""), "x-admin-actor": `${principal}@${ORG}`, ...portalIdentityHeader() },
+      });
+      const data = await r.text();
+      res.writeHead(r.status, { "content-type": "application/json" }).end(data);
+    } catch (e) { json(res, 502, { error: "core_unreachable" }); }
+    return;
   }
   if (method === "GET" && pathname === "/api/agent-templates") {
-    return forward(req, res, principal || "anonymous", "GET", "/v1/agent-templates");
+    try {
+      const r = await fetch(`${CORE}/v1/agent-templates`, { headers: signedHeaders("GET", "/v1/agent-templates", "") });
+      const data = await r.text();
+      res.writeHead(r.status, { "content-type": "application/json" }).end(data);
+    } catch (e) { json(res, 502, { error: "core_unreachable" }); }
+    return;
   }
 
   if (method === "GET" && pathname === "/agents") {
