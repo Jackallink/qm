@@ -369,7 +369,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   // Agent Management Panel
   if (method === "GET" && pathname === "/agents") {
-    if (!principal) return json(res, 401, { error: "signed_out" });
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(AGENT_PANEL_HTML);
     return;
   }
