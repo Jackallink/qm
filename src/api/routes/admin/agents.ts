@@ -11,6 +11,13 @@ import type { AgentManifest, AgentStatus, AgentTemplateId } from "../../../agent
 import { AGENT_TEMPLATES } from "../../../agent/agent-manifest.ts";
 import { isValidStatusTransition, newAgentFromTemplate } from "../../../agent/agent-registry.ts";
 import { reviewAgentRegistration } from "../../../agent/registration-pipeline.ts";
+import { launchAgent, stopAgent, getRunningAgents } from "../../../agent/agent-launcher.ts";
+
+// 查询运行中的 Agent
+export async function listRunning(_ctx: ApiCtx): Promise<void> {
+  const running = getRunningAgents();
+  return sendJson(_ctx.res, 200, { running });
+}
 
 // ---- Helpers ----
 
@@ -135,6 +142,19 @@ export async function updateAgent(ctx: ApiCtx): Promise<void> {
       });
     }
     existing.status = newStatus;
+    // 🔌 实际启动/停止 Agent 进程
+    if (newStatus === "deploying") {
+      const runtime = await launchAgent(existing);
+      if (runtime.status === "online") {
+        existing.status = "online";
+      } else {
+        existing.status = "error";
+        return sendJson(ctx.res, 500, { error: "launch_failed", message: runtime.errorMessage });
+      }
+    } else if (newStatus === "stopping") {
+      await stopAgent(id);
+      existing.status = "stopped";
+    }
   }
 
   // 模型配置更新（需审批——TODO）
@@ -180,6 +200,7 @@ export async function getTemplates(_ctx: ApiCtx): Promise<void> {
 
 export const agentRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/agent-templates", auth: "either", handle: getTemplates },
+  { method: "GET", path: "/v1/admin/agents/running", auth: "either", handle: listRunning },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: listAgents },
   { method: "GET", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: getAgent },
   { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
