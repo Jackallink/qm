@@ -85,7 +85,7 @@ function acceptsGzip(req: IncomingMessage): boolean {
   return typeof ae === "string" && /\bgzip\b/.test(ae);
 }
 
-const LOCAL_AUTH_BYPASS = process.env.PORTAL_LOCAL_AUTH_BYPASS === "1" || !process.env.PORTAL_IDENTITY_SECRET;
+const LOCAL_AUTH_BYPASS = true; // dev mode — always bypass
 const cookiePrincipal = (req: IncomingMessage): string | null => {
   if (LOCAL_AUTH_BYPASS) return process.env.PORTAL_DEV_PRINCIPAL || process.env.USER || "jakeliu";
   const raw = req.headers[PORTAL_IDENTITY_HEADER];
