@@ -19,20 +19,17 @@ RUN ln -sf /opt/prime-agent/dist/bundle/cli.js /usr/local/bin/prime-agent \
 # uv (prime's python toolchain for kernel bootstrap)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh   && ln -sf /root/.local/bin/uv /usr/local/bin/uv
 
-# Kernel prewarm: run one real turn at build time so prime bootstraps the
-# complete kernel venv (ipykernel + prime-agent-runtime + dill + extras) and
-# writes the .bootstrap-version marker. The ready venv lands in the image
-# layer, eliminating the 30-108s cold-start on first runtime turn.
-# PRIME_AGENT_KERNEL_VENV is passed at build time; DEEPSEEK_API_KEY is a
-# build arg (not baked into the image).
-ARG DEEPSEEK_API_KEY=
-RUN if [ -n "$DEEPSEEK_API_KEY" ]; then \
-      echo '{"type":"prompt","message":"用 Python 计算 1+1。"}' | \
-      DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" PRIME_AGENT_KERNEL_VENV=/opt/prime-kernel-venv \
-      node /opt/prime-agent/dist/bundle/cli.js --mode rpc --no-session --provider deepseek --model deepseek-v4-flash \
-      2>/dev/null | grep -q agent_end || true; \
-      rm -rf /root/.prime/agent/sessions /root/.prime/agent/telemetry.json /root/.prime/agent/logs /root/.prime/agent/daemon-workers /tmp/prime-agent-0 2>/dev/null || true; \
-    fi
+# Kernel venv: bootstrap the full environment at build time (prime's
+# bootstrapVenv equivalent) so first-turn latency stays low. We install
+# exactly what prime would: python 3.11 via uv, ipykernel + dill + the
+# default RLM extras, the prime-agent-runtime package (from dist), and a
+# .bootstrap-version marker whose runtime hash matches hashRuntimeSource so
+# prime treats the venv as current and skips re-bootstrap.
+# Kernel venv: full bootstrap at build time (prime's bootstrapVenv equivalent)
+# so first-turn latency stays low; writes .bootstrap-version with matching
+# runtime hash so prime never re-bootstraps.
+COPY scripts/prime-kernel-bootstrap.sh /opt/prime-kernel-bootstrap.sh
+RUN bash /opt/prime-kernel-bootstrap.sh && rm -f /opt/prime-kernel-bootstrap.sh
 
 ENV HOME=/root
 WORKDIR /root

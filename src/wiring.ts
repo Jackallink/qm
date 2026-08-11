@@ -108,7 +108,7 @@ import {
   type SandboxRoute,
 } from "./sandbox/sandbox-routing.ts";
 import { createSandboxMigrationRunner, type SandboxMigrationRunner } from "./sandbox/sandbox-migration-runner.ts";
-import type { Sandbox } from "./sandbox/sandbox.ts";
+import type { Sandbox, SandboxHandle } from "./sandbox/sandbox.ts";
 import { withOperatorTokenFallback } from "./credentials/connector-token.ts";
 import {
   createAwsSecretsManagerSource,
@@ -732,6 +732,27 @@ export function buildApp(
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
   const approvalGrants: DurableMap<CommandApprovalGrant> = artifactMap<CommandApprovalGrant>("approval_grants");
+  // Per-scope prime sandbox handles (provision once, reuse across turns).
+  // Mirrors orchestrator's provision layers: org read-only global + scope rw.
+  const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
+  const primeSandboxHandleFor = (scope: ScopeId): Promise<SandboxHandle> => {
+    const existing = primeSandboxHandles.get(scope);
+    if (existing) return existing;
+    const pending = sandbox
+      .provision(
+        [
+          { scopeId: runtimeOrgScope, mountPath: "global", mode: "ro" },
+          { scopeId: scope, mountPath: "", mode: "rw" },
+        ],
+        {},
+      )
+      .catch((error: unknown) => {
+        primeSandboxHandles.delete(scope);
+        throw error;
+      });
+    primeSandboxHandles.set(scope, pending);
+    return pending;
+  };
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
@@ -777,6 +798,18 @@ export function buildApp(
         model: config.primeModel ?? "deepseek-v4-flash",
         sessionDirBase: config.primeSessionDir,
         args: config.primeArgs ? config.primeArgs.split(",").filter(Boolean) : undefined,
+        env: {
+          DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "",
+          PRIME_AGENT_KERNEL_VENV: "/opt/prime-kernel-venv",
+        },
+        ...(config.primeSandbox
+          ? {
+              sandbox: {
+                sandbox,
+                handleFor: primeSandboxHandleFor,
+              },
+            }
+          : {}),
         resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
           const grants = await approvalGrants.all();
           return grants.some((g) => {

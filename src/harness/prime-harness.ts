@@ -83,6 +83,7 @@ const DEFAULT_BUDGET = 200_000;
 
 export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   const clients = new Map<string, PrimeRpcClient>();
+  let lastSessionStats: Record<string, unknown> | null = null;
 
   const resolveProviderModel = (scope: ScopeId): { provider?: string; model?: string } => ({
     provider: opts.provider,
@@ -249,7 +250,13 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
 
         try {
           const started = Date.now();
-          const statsBefore = await client.getSessionStats().catch(() => null);
+          // One-shot sandbox mode: each getSessionStats is a fresh process run
+          // (daemon start ~seconds), so reuse the previous turn's stats as
+          // the baseline instead of issuing a second run just to read it.
+          let statsBefore = lastSessionStats;
+          if (!opts.sandbox) {
+            statsBefore = await client.getSessionStats().catch(() => null);
+          }
           const result = await client.promptAndCollect(input.input, {
             // One-shot sandbox mode has no live streaming context, so steer
             // queue semantics don't apply (and would error on a fresh process).
@@ -273,6 +280,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
             const after = t(stats.tokens as Record<string, unknown> | undefined);
             const before = t(statsBefore?.tokens as Record<string, unknown> | undefined);
             const costUsd = Math.max(0, (typeof stats.cost === "number" ? stats.cost : 0) - (typeof statsBefore?.cost === "number" ? statsBefore.cost : 0));
+            lastSessionStats = stats;
             const tokenInput = after.input - before.input;
             const output = after.output - before.output;
             const cacheRead = after.cacheRead - before.cacheRead;
