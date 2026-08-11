@@ -472,6 +472,7 @@ export interface AppDeps {
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
   agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
+  sopStore?: import("../agent/sop-store.ts").SopRunStore;
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;

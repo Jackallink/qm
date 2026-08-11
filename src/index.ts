@@ -36,6 +36,7 @@ const server = createServer(built.app, {
   customProviders: built.customProviders,
   refreshCustomProviders: built.refreshCustomProviders,
   agentRegistry: built.agentRegistry,
+  sopStore: built.sopStore,
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,

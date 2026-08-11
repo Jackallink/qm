@@ -35,6 +35,7 @@ import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } f
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates } from "./admin/agents.ts";
+import { listRuns, getRun, createRun, signGate, rollbackGate, getHistory } from "./admin/sop-runs.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -70,6 +71,12 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
   { method: "PUT", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: updateAgent },
   { method: "DELETE", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: deleteAgent },
+  { method: "GET", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: listRuns },
+  { method: "GET", path: "/v1/sop-runs/:id", auth: "either", handle: getRun },
+  { method: "POST", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: createRun },
+  { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/sign", auth: "either", handle: signGate },
+  { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/rollback", auth: "either", handle: rollbackGate },
+  { method: "GET", path: "/v1/sop-runs/:id/history", auth: "either", handle: getHistory },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },

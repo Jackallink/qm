@@ -85,6 +85,7 @@ export interface ServerDeps {
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
   agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
+  sopStore?: import("../agent/sop-store.ts").SopRunStore;
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   harnessId?: string;
   admin?: AdminService;

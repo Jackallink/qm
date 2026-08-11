@@ -167,6 +167,7 @@ import type { SessionStore } from "./sessions/session-store.ts";
 import { createHermesHarness } from "./harness/hermes-harness.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createAgentRegistryStore } from "./agent/agent-registry.ts";
+import { createSopRunStore } from "./agent/sop-store.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
@@ -327,6 +328,7 @@ export interface BuiltApp {
   customProviders: CustomProviderStore;
   refreshCustomProviders: () => Promise<void>;
   agentRegistry: import("./agent/agent-registry.ts").AgentRegistryStore;
+  sopStore: import("./agent/sop-store.ts").SopRunStore;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -736,6 +738,7 @@ export function buildApp(
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
   const approvalGrants: DurableMap<CommandApprovalGrant> = artifactMap<CommandApprovalGrant>("approval_grants");
   const agentRegistry = createAgentRegistryStore(artifactMap("agent_registry"));
+  const sopStore = createSopRunStore(artifactMap("sop_runs"));
   // Per-scope prime sandbox handles (provision once, reuse across turns).
   // Mirrors orchestrator's provision layers: org read-only global + scope rw.
   const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
@@ -1205,6 +1208,7 @@ export function buildApp(
     customProviders,
     refreshCustomProviders,
     agentRegistry,
+    sopStore,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
     acl,
     admin,
@@ -1541,6 +1545,7 @@ export function buildApp(
     modelCredentials,
     customProviders,
     agentRegistry,
+    sopStore,
     refreshCustomProviders,
     acl,
     skills,
