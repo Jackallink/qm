@@ -817,6 +817,36 @@ export function buildApp(
             return g.scope === "session" && g.sessionId === sessionId;
           });
         },
+        autoRefine: {
+          interval: 5,
+          onSkill: async (skill) => {
+            // POST to QM's internal skills API via source-auth.
+            const { createHmac } = await import("node:crypto");
+            const body = JSON.stringify({
+              principalId: "jakeliu",
+              scopeId: "personal:jakeliu",
+              name: skill.name,
+              description: skill.description,
+              body: skill.body,
+            });
+            const nowSec = Math.floor(Date.now() / 1000);
+            const canonical = `POST\n/v1/skills\n${body}`;
+            const sig = `v0=${createHmac("sha256", config.signingSecret!).update(`v0:${nowSec}:${canonical}`).digest("hex")}`;
+            const headers: Record<string, string> = {
+              "content-type": "application/json",
+              "x-timestamp": String(nowSec),
+              "x-signature": sig,
+              "x-admin-actor": "jakeliu@acme",
+            };
+            const res = await fetch(`http://127.0.0.1:${config.port}/v1/skills`, {
+              method: "POST",
+              headers,
+              body,
+            });
+            if (res.status < 300) console.error(`[prime-autoRefine] skill imported: ${skill.name}`);
+            else console.error(`[prime-autoRefine] skill import failed: ${res.status}`);
+          },
+        },
         systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
       }),
     ],

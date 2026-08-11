@@ -77,6 +77,19 @@ export interface PrimeHarnessOptions {
     /** Session dir base inside the sandbox (default: handle rootDir). */
     sessionDirBase?: string;
   };
+  /**
+   * Auto-refine: periodically trigger prime's /refine and feed extracted
+   * skills back to QM's skill library. Each scope has its own turn counter;
+   * after `interval` turns, the harness sends a refine RPC command, reads
+   * the resulting harness_state.json, extracts skill-type entries, and
+   * calls `onSkill` for each one (wiring can then POST to /v1/skills).
+   */
+  autoRefine?: {
+    /** Trigger a refine every N turns per scope. */
+    interval: number;
+    /** Called for each skill entry discovered. */
+    onSkill: (skill: { name: string; description: string; body: string }) => Promise<void>;
+  };
 }
 
 const DEFAULT_BUDGET = 200_000;
@@ -84,6 +97,7 @@ const DEFAULT_BUDGET = 200_000;
 export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   const clients = new Map<string, PrimeRpcClient>();
   let lastSessionStats: Record<string, unknown> | null = null;
+  const turnCounts = new Map<string, number>();
 
   const resolveProviderModel = (scope: ScopeId): { provider?: string; model?: string } => ({
     provider: opts.provider,
@@ -217,6 +231,39 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
 
   void handleExtensionUiRequest;
 
+  /** Auto-refine: trigger /refine, extract skills, feed to QM skill library. */
+  const triggerAutoRefine = async (scope: ScopeId, client: PrimeRpcClient): Promise<void> => {
+    if (!opts.autoRefine) return;
+    try {
+      const refineResp = await client.send({ type: "refine" }, { timeoutMs: 600_000 });
+      if (!refineResp.success) return;
+      const data = (refineResp.data ?? {}) as { harnessStatePath?: string };
+      const statePath = data.harnessStatePath;
+      if (!statePath) return;
+      // Read the harness state file (via the same sandbox.io/host fs).
+      // In child mode it lives on the host; in sandbox mode it is inside
+      // the container and a separate sandbox.run would be needed. For the
+      // MVP we only support child mode (file lives on the host).
+      if (opts.sandbox) return; // TODO: sandbox-mode state read
+      const { readFileSync } = await import("node:fs");
+      const raw = readFileSync(statePath, "utf8");
+      const hs = JSON.parse(raw) as { entries?: { skill?: Record<string, { title?: string; content?: string; metadata?: Record<string, unknown> }> } };
+      const skills = Object.values(hs.entries?.skill ?? {});
+      for (const s of skills) {
+        if (!s?.content) continue;
+        const name = (s.title ?? "skill").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 60);
+        const description = String(s.metadata?.description ?? s.title ?? "").slice(0, 200);
+        const body = s.content;
+        await opts.autoRefine.onSkill({ name, description, body }).catch(() => undefined);
+        console.error(`[prime-harness] autoRefine: imported skill "${name}" (${body.length} chars)`);
+      }
+    } catch (e) {
+      console.error(`[prime-harness] autoRefine failed: ${(e as Error).message.slice(0, 120)}`);
+    }
+  };
+
+  void triggerAutoRefine;
+
   return defineHarness(
     {
       id: "prime",
@@ -310,6 +357,12 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
                 },
               }),
             ).catch(() => undefined);
+          }
+          // Auto-refine: fire-and-forget after every N turns (per scope).
+          const tc = (turnCounts.get(scope) ?? 0) + 1;
+          turnCounts.set(scope, tc);
+          if (opts.autoRefine && tc % opts.autoRefine.interval === 0) {
+            void triggerAutoRefine(scope, client).catch(() => undefined);
           }
           return {
             reply,
