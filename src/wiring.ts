@@ -165,6 +165,7 @@ import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import type { SessionStore } from "./sessions/session-store.ts";
 import { createHermesHarness } from "./harness/hermes-harness.ts";
+import { createClawHarness } from "./harness/claw-harness.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createAgentRegistryStore } from "./agent/agent-registry.ts";
 import { createSopRunStore } from "./agent/sop-store.ts";
@@ -870,6 +871,14 @@ export function buildApp(
         baseUrl: config.hermesBaseUrl ?? process.env.HERMES_BASE_URL,
         model: config.hermesModel ?? process.env.HERMES_MODEL,
         apiKey: process.env.HERMES_API_KEY,
+      }),
+    ],
+    [
+      "claw",
+      createClawHarness({
+        baseUrl: process.env.CLAW_BASE_URL,
+        model: process.env.CLAW_MODEL,
+        apiToken: process.env.CLAW_API_TOKEN,
       }),
     ],
   ]);
