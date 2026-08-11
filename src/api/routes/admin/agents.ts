@@ -144,12 +144,15 @@ export async function updateAgent(ctx: ApiCtx): Promise<void> {
     existing.status = newStatus;
     // 🔌 实际启动/停止 Agent 进程
     if (newStatus === "deploying") {
+      // 1. 先持久化 deploying 状态
+      existing.status = "deploying";
+      await ctx.deps.agentRegistry.put(ws, existing);
+      // 2. 真实启动 Agent 进程
       const runtime = await launchAgent(existing);
       if (runtime.status === "online") {
         existing.status = "online";
       } else {
         existing.status = "error";
-        return sendJson(ctx.res, 500, { error: "launch_failed", message: runtime.errorMessage });
       }
     } else if (newStatus === "stopping") {
       await stopAgent(id);
