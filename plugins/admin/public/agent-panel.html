@@ -54,9 +54,10 @@ function createAgent(name) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ id: id, name: name, template: "custom" })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    alert(d.id ? "Created: " + d.id : "Failed");
-    loadAgents();
+  }).then(function(r) { return r.json().then(function(d) { return {ok:r.ok,status:r.status,data:d}; }); }).then(function(r) {
+    if (r.ok) { alert("Created: " + r.data.id); loadAgents(); }
+    else if (r.status === 409) { alert("Already exists: " + id + ". Use a different name."); }
+    else { alert("Error " + r.status + ": " + JSON.stringify(r.data)); }
   });
 }
 

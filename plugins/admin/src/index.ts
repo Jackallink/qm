@@ -35,7 +35,7 @@ const AGENT_PANEL_HTML = readFileSync(
 );
 const ADMIN_CSP = [
   "default-src 'self'",
-  `script-src 'sha256-${createHash("sha256").update(ADMIN_SCRIPT).digest("base64")}' 'sha256-sREBjhCO05R8XLIyrTUE1H2IoQhl9Dgy4wY0GGgkCpk='`,
+  `script-src 'sha256-${createHash("sha256").update(ADMIN_SCRIPT).digest("base64")}' 'sha256-4TxZG76AVs6wAQ6MsYO5z9ikXKlk7yEH+EVeuQXBbvA='`,
   "style-src 'unsafe-inline'",
   "img-src 'self' data:",
   "connect-src 'self'",
