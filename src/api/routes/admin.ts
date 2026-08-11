@@ -36,6 +36,8 @@ import { deleteModelProvider, getModelProviders, putModelProvider } from "./admi
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates } from "./admin/agents.ts";
 import { listRuns, getRun, createRun, signGate, rollbackGate, getHistory } from "./admin/sop-runs.ts";
+import { sendMessage, getInbox, ackMessage, subscribeEvents, heartbeat } from "./admin/messenger.ts";
+import { listJobs, scheduleJob, pauseJob, resumeJob, checkLoop } from "./admin/scheduler.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -77,6 +79,18 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/sign", auth: "either", handle: signGate },
   { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/rollback", auth: "either", handle: rollbackGate },
   { method: "GET", path: "/v1/sop-runs/:id/history", auth: "either", handle: getHistory },
+  // Messenger
+  { method: "POST", path: "/v1/admin/agents/:id/messages", auth: "either", handle: sendMessage },
+  { method: "GET", path: "/v1/admin/agents/:id/inbox", auth: "either", handle: getInbox },
+  { method: "POST", path: "/v1/admin/agents/:id/inbox/:msgId/ack", auth: "either", handle: ackMessage },
+  { method: "POST", path: "/v1/admin/agents/:id/subscribe", auth: "either", handle: subscribeEvents },
+  { method: "POST", path: "/v1/admin/agents/:id/heartbeat", auth: "either", handle: heartbeat },
+  // Scheduler
+  { method: "GET", path: "/v1/admin/scheduler/jobs", auth: "either", handle: listJobs },
+  { method: "POST", path: "/v1/admin/scheduler/jobs", auth: "either", handle: scheduleJob },
+  { method: "POST", path: "/v1/admin/scheduler/jobs/:jobId/pause", auth: "either", handle: pauseJob },
+  { method: "POST", path: "/v1/admin/scheduler/jobs/:jobId/resume", auth: "either", handle: resumeJob },
+  { method: "POST", path: "/v1/admin/scheduler/check-loop", auth: "either", handle: checkLoop },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },
