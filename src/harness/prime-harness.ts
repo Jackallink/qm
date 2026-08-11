@@ -269,8 +269,15 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
           // Report token/cost usage to QM (budget tracking + session_llm_requests).
           // Session stats are cumulative, so take the delta between before/after.
           const { model } = resolveProviderModel(scope);
-          const stats = await client.getSessionStats().catch(() => null);
-          if (stats && input.recordLlmRequest) {
+          // One-shot sandbox mode: a second getSessionStats would spawn a
+          // fresh process run (~seconds to tens of seconds) just to read
+          // cumulative stats; skip precise usage and report zero (QM budget
+          // still records the call). Child mode keeps exact deltas.
+          let stats = lastSessionStats;
+          if (!opts.sandbox) {
+            stats = await client.getSessionStats().catch(() => null);
+          }
+          if (stats && input.recordLlmRequest && !opts.sandbox) {
             const t = (tokens: Record<string, unknown> | null | undefined) => ({
               input: Number((tokens?.input as number | undefined) ?? 0),
               output: Number((tokens?.output as number | undefined) ?? 0),
