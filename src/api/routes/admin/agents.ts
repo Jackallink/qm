@@ -10,19 +10,21 @@ import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import type { AgentManifest, AgentStatus, AgentTemplateId } from "../../../agent/agent-manifest.ts";
 import { AGENT_TEMPLATES } from "../../../agent/agent-manifest.ts";
 import { isValidStatusTransition, newAgentFromTemplate } from "../../../agent/agent-registry.ts";
+import { reviewAgentRegistration } from "../../../agent/registration-pipeline.ts";
 
 // ---- Helpers ----
 
 function extractBody(ctx: ApiCtx) {
-  return (ctx.body ?? {}) as {
-    name?: unknown;
-    template?: unknown;
-    harness?: unknown;
-    model?: unknown;
-    capabilities?: unknown;
-    runtime?: unknown;
-    security?: unknown;
-    status?: unknown;
+  const raw = (ctx.body ?? {}) as Record<string, unknown>;
+  return {
+    name: raw.name,
+    template: raw.template,
+    harness: raw.harness,
+    model: raw.model,
+    capabilities: raw.capabilities,
+    runtime: raw.runtime,
+    security: raw.security,
+    status: raw.status,
   };
 }
 
@@ -44,6 +46,13 @@ function agentFromBody(ws: string, agentId: string, body: ReturnType<typeof extr
       ...(typeof m.tokenLimit === "number" ? { tokenLimit: m.tokenLimit } : {}),
       ...(typeof m.costLimit === "number" ? { costLimit: m.costLimit } : {}),
     };
+  }
+  // 传递 capabilities / security 嵌套对象
+  if (body.capabilities && typeof body.capabilities === "object") {
+    overrides.capabilities = body.capabilities as AgentManifest["capabilities"];
+  }
+  if (body.security && typeof body.security === "object") {
+    overrides.security = body.security as AgentManifest["security"];
   }
   return newAgentFromTemplate(ws, agentId, name, templateId, registeredBy, overrides);
 }
@@ -83,6 +92,19 @@ export async function createAgent(ctx: ApiCtx): Promise<void> {
   if (!manifest) return sendJson(ctx.res, 400, { error: "bad_request", message: "name is required" });
   const existing = await ctx.deps.agentRegistry.get(ws, id);
   if (existing) return sendJson(ctx.res, 409, { error: "conflict", message: `agent ${id} already exists` });
+
+  // 🔒 安全审查流水线
+  const review = reviewAgentRegistration(manifest, {
+    isPlatformAdmin: false, // 默认非平台管理员；公开 Agent 需额外审批
+  });
+  if (!review.passed) {
+    return sendJson(ctx.res, 403, {
+      error: "registration_rejected",
+      message: `Gate ${review.blockedBy} failed`,
+      review,
+    });
+  }
+
   await ctx.deps.agentRegistry.put(ws, manifest);
   audit(ctx.deps, {
     principalId: authorized.id,
