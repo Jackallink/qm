@@ -26,84 +26,82 @@
 </div>
 <div id="content" class="loading">Loading...</div>
 <script>
-const CORE = "";
-const WS = "org:acme";
-let sig = null;
-async function api(path, method, body) {
-  if (!sig) { // 从当前 admin session 获取签名
-    const r = await fetch("/admin/api/whoami"); sig = r.ok ? {} : null;
-  }
-  const headers = { "content-type": "application/json" };
-  // 使用 portal proxy（admin 页面自带认证）
-  const res = await fetch("/admin/api/proxy" + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  return res.json();
-}
+var WS = "org:acme";
 
-async function loadAgents() {
-  const c = document.getElementById("content");
-  try {
-    // 用 source-auth 签名（从 admin session 继承）
-    const h = await fetch(`/api/agents/workspaces/${WS}/agents`, { headers: {  } });
-    let data = { agents: [] };
-    try { data = await h.json(); } catch(e) {}
-    const agents = data.agents || [];
-    if (!agents.length) { c.innerHTML = '<div class="card"><p>No agents yet. <a href="#" onclick="createAgent()">Create one</a></p></div>'; return; }
-    c.innerHTML = agents.map(a => `<div class="card">
-      <h3>${a.name || a.id} <span class="badge ${a.status}">${a.status}</span></h3>
-      <p>${a.id} · harness: ${a.harness} · model: ${a.model?.primary || '?'} · v${a.version}</p>
-    </div>`).join("");
-  } catch(e) { c.innerHTML = `<div class="card"><p>API unavailable: ${e.message}. Use curl to manage agents.</p></div>`; }
-}
-
-async function loadSopRuns() {
-  const c = document.getElementById("content");
-  try {
-    const h = await fetch(`/api/agents/workspaces/${WS}/sop-runs`, { headers: {  } });
-    let data = { runs: [] };
-    try { data = await h.json(); } catch(e) {}
-    const runs = data.runs || [];
-    if (!runs.length) { c.innerHTML = '<div class="card"><p>No SOP runs yet.</p></div>'; return; }
-    c.innerHTML = runs.map(r => `<div class="card">
-      <h3>${r.modelId} <span class="badge ${r.status}">Gate ${r.currentGate}/5</span></h3>
-      <p>${r.id} · agent: ${r.agentId} · updated: ${new Date(r.updatedAt).toLocaleDateString()}</p>
-    </div>`).join("");
-  } catch(e) { c.innerHTML = `<div class="card"><p>API unavailable. Try: curl /api/agents/workspaces/${WS}/sop-runs</p></div>`; }
-}
-
-async function loadTemplates() {
-  const c = document.getElementById("content");
-  try {
-    const h = await fetch("/api/agent-templates");
-    let data = { templates: [] };
-    try { data = await h.json(); } catch(e) {}
-    const tmpl = data.templates || [];
-    c.innerHTML = tmpl.map(t => `<div class="card">
-      <h3>${t.name} (${t.id})</h3><p>${t.description}</p>
-      <button class="btn primary" onclick="createFromTemplate('${t.id}')">Create ${t.name}</button>
-    </div>`).join("");
-  } catch(e) { c.innerHTML = '<div class="card"><p>Templates API unavailable.</p></div>'; }
-}
-
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-  t.classList.add("active");
-  const tab = t.dataset.tab;
-  if (tab === "agents") loadAgents();
-  else if (tab === "sopruns") loadSopRuns();
-  else loadTemplates();
+// -- delegation: no inline onclick --
+document.getElementById("content").addEventListener("click", function(e) {
+  var a = e.target.closest("[data-action]");
+  if (!a) return;
+  var action = a.dataset.action;
+  if (action === "create-agent") { var n = prompt("Agent name:"); if (n) createAgent(n); }
+  else if (action === "from-template") { var n = prompt("Name:"); if (n) createAgent(n); }
 });
 
-loadAgents();
+document.querySelectorAll(".tab").forEach(function(t) {
+  t.addEventListener("click", function() {
+    document.querySelectorAll(".tab").forEach(function(x) { x.classList.remove("active"); });
+    t.classList.add("active");
+    var tab = t.dataset.tab;
+    if (tab === "agents") loadAgents();
+    else if (tab === "sopruns") loadSopRuns();
+    else loadTemplates();
+  });
+});
 
-async function createAgent() {
-  const name = prompt("Agent name:");
-  if (!name) return;
-  const id = name.toLowerCase().replace(/[^a-z0-9-]/g,"-");
-  const res = await api(`/v1/admin/workspaces/${WS}/agents`, "POST", { id, name, template: "custom" });
-  alert(res.ok ? "Created! Refresh to see." : "Failed: " + JSON.stringify(res));
-  loadAgents();
+function createAgent(name) {
+  var id = name.toLowerCase().replace(/[^a-z0-9-]/g,"-");
+  fetch("/api/agents/workspaces/" + WS + "/agents", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: id, name: name, template: "custom" })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    alert(d.id ? "Created: " + d.id : "Failed");
+    loadAgents();
+  });
 }
-function createFromTemplate(tid) { const name = prompt("Name:"); if(name) createAgent(); }
+
+function loadAgents() {
+  var c = document.getElementById("content");
+  fetch("/api/agents/workspaces/" + WS + "/agents")
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var agents = data.agents || [];
+      if (!agents.length) { c.innerHTML = '<div class="card"><p>No agents yet. <a href="#" data-action="create-agent">Create one</a></p></div>'; return; }
+      c.innerHTML = agents.map(function(a) {
+        return '<div class="card"><h3>' + (a.name || a.id) + ' <span class="badge ' + (a.status||"") + '">' + (a.status||"") + '</span></h3>' +
+               '<p>' + a.id + ' · harness: ' + (a.harness||"?") + ' · model: ' + ((a.model&&a.model.primary)||"?") + ' · v' + (a.version||1) + '</p></div>';
+      }).join("");
+    }).catch(function(e) { c.innerHTML = '<div class="card"><p>API unavailable</p></div>'; });
+}
+
+function loadSopRuns() {
+  var c = document.getElementById("content");
+  fetch("/api/agents/workspaces/" + WS + "/sop-runs")
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var runs = data.runs || [];
+      if (!runs.length) { c.innerHTML = '<div class="card"><p>No SOP runs yet.</p></div>'; return; }
+      c.innerHTML = runs.map(function(r) {
+        return '<div class="card"><h3>' + (r.modelId||"") + ' <span class="badge ' + (r.status||"") + '">Gate ' + (r.currentGate||0) + '/5</span></h3>' +
+               '<p>' + r.id + ' · agent: ' + (r.agentId||"") + ' · ' + new Date(r.updatedAt).toLocaleDateString() + '</p></div>';
+      }).join("");
+    }).catch(function(e) { c.innerHTML = '<div class="card"><p>API unavailable.</p></div>'; });
+}
+
+function loadTemplates() {
+  var c = document.getElementById("content");
+  fetch("/api/agent-templates")
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var tmpl = data.templates || [];
+      c.innerHTML = tmpl.map(function(t) {
+        return '<div class="card"><h3>' + (t.name||"") + ' (' + (t.id||"") + ')</h3><p>' + (t.description||"") + '</p>' +
+               '<button class="btn primary" data-action="from-template" data-template="' + t.id + '">Create ' + (t.name||"") + '</button></div>';
+      }).join("");
+    }).catch(function(e) { c.innerHTML = '<div class="card"><p>Templates API unavailable.</p></div>'; });
+}
+
+loadAgents();
 </script>
 </body>
 </html>
