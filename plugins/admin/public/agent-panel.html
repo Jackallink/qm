@@ -43,7 +43,7 @@ async function loadAgents() {
   const c = document.getElementById("content");
   try {
     // 用 source-auth 签名（从 admin session 继承）
-    const h = await fetch(`http://localhost:8081/v1/admin/workspaces/${WS}/agents`, { headers: { "x-admin-actor": "jakeliu@acme", "x-timestamp": String(Math.floor(Date.now()/1000)), "x-signature": "skip" } });
+    const h = await fetch(`/api/agents/workspaces/${WS}/agents`, { headers: {  } });
     let data = { agents: [] };
     try { data = await h.json(); } catch(e) {}
     const agents = data.agents || [];
@@ -58,7 +58,7 @@ async function loadAgents() {
 async function loadSopRuns() {
   const c = document.getElementById("content");
   try {
-    const h = await fetch(`http://localhost:8081/v1/admin/workspaces/${WS}/sop-runs`, { headers: { "x-admin-actor": "jakeliu@acme", "x-timestamp": String(Math.floor(Date.now()/1000)), "x-signature": "skip" } });
+    const h = await fetch(`/api/agents/workspaces/${WS}/sop-runs`, { headers: {  } });
     let data = { runs: [] };
     try { data = await h.json(); } catch(e) {}
     const runs = data.runs || [];
@@ -67,13 +67,13 @@ async function loadSopRuns() {
       <h3>${r.modelId} <span class="badge ${r.status}">Gate ${r.currentGate}/5</span></h3>
       <p>${r.id} · agent: ${r.agentId} · updated: ${new Date(r.updatedAt).toLocaleDateString()}</p>
     </div>`).join("");
-  } catch(e) { c.innerHTML = `<div class="card"><p>API unavailable. Try: curl http://localhost:8081/v1/admin/workspaces/${WS}/sop-runs</p></div>`; }
+  } catch(e) { c.innerHTML = `<div class="card"><p>API unavailable. Try: curl /api/agents/workspaces/${WS}/sop-runs</p></div>`; }
 }
 
 async function loadTemplates() {
   const c = document.getElementById("content");
   try {
-    const h = await fetch("http://localhost:8081/v1/agent-templates");
+    const h = await fetch("/api/agent-templates");
     let data = { templates: [] };
     try { data = await h.json(); } catch(e) {}
     const tmpl = data.templates || [];

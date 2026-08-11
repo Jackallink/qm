@@ -368,6 +368,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   // Agent Management Panel
+  // Agent API proxy（转发到 Core，自动带 source-auth）
+  if (pathname.startsWith("/api/agents/")) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const corePath = pathname.replace("/api/agents", "/v1/admin");
+    return forward(req, res, principal, method, corePath);
+  }
+  if (method === "GET" && pathname === "/api/agent-templates") {
+    return forward(req, res, principal || "anonymous", "GET", "/v1/agent-templates");
+  }
+
   if (method === "GET" && pathname === "/agents") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(AGENT_PANEL_HTML);
     return;
