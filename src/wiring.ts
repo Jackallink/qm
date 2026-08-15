@@ -183,6 +183,7 @@ import { mintCapabilityToken, CAPABILITY_TTL_MS, EGRESS_PROXY_AUD } from "./auth
 import { createControlService } from "./api/control-service.ts";
 import { createMemoryRunStore } from "./runs/memory-run-store.ts";
 import { createPostgresRunStore } from "./runs/postgres-run-store.ts";
+import { createRemoteTurnStore, type RemoteTurnStore } from "./remote-turn/store.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
 import { isTerminal, type RunStore } from "./runs/run-store.ts";
@@ -311,6 +312,7 @@ export interface BuiltApp {
   deploymentLayerRefresh: Sweeper;
   sessions: SessionStore;
   runs: RunStore;
+  remoteTurnStore?: RemoteTurnStore;
   signals: RunSignalStore;
   tasks: TaskStore;
   sessionStateBus: SessionStateBus;
@@ -697,6 +699,8 @@ export function buildApp(
     config.sessionStore === "postgres"
       ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"))
       : createMemorySessionStore();
+  const remoteTurnStore: RemoteTurnStore | undefined =
+    config.sessionStore === "postgres" ? createRemoteTurnStore(requireDbUrl("SESSION_STORE")) : undefined;
   const runStoreKind = config.runStore;
   const runSignals: RunSignalStore =
     runStoreKind === "postgres"
@@ -1454,6 +1458,7 @@ export function buildApp(
     deploymentLayerRefresh,
     sessions,
     runs,
+    ...(remoteTurnStore ? { remoteTurnStore } : {}),
     signals: runSignals,
     tasks,
     sessionStateBus,

@@ -56,6 +56,7 @@ export interface RemoteTurnStoreOptions {
   now?: () => number;
   onStep?: OnStep;
   leaseTtlMs?: number;
+  authorizedOperators?: (scopeId: string, operatorId: string) => Promise<boolean>;
   abortKey?: { kid: string; privateKeyPem: string };
   runs?: RunStore;
 }
@@ -171,7 +172,20 @@ export interface RemoteTurnStore {
   listParked(): Promise<ParkedTurnRecord[]>;
   listExpiredDispatching(now: number): Promise<ExpiredDispatchingRecord[]>;
   reconcile(input: { remoteTurnId: string; outcome: ReconcileOutcome; evidenceDigest: string }): Promise<ReconcileResult>;
+  readAuditChain(scopeId: string, operatorId: string): Promise<RemoteTurnAuditReadResult>;
   close(): Promise<void>;
+}
+
+export type RemoteTurnAuditReadResult =
+  | { status: "ok"; events: RemoteTurnEventRecord[] }
+  | { status: "not_found" };
+
+export interface RemoteTurnEventRecord {
+  remoteTurnId: string;
+  seq: number;
+  eventType: string;
+  payload: Record<string, unknown> | null;
+  createdAt: number;
 }
 
 const ADMISSION_WINDOW_SEC = 5 * 60;
@@ -973,6 +987,37 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     }));
   }
 
+  async function readAuditChain(scopeId: string, operatorId: string): Promise<RemoteTurnAuditReadResult> {
+    const authorized = opts.authorizedOperators ?? (async () => false);
+    const allowed = await authorized(scopeId, operatorId);
+    if (!allowed) {
+      await pool.q(
+        "INSERT INTO remote_turn_audit_reads(scope_id, operator_id, outcome, created_at) VALUES($1,$2,'denied',$3)",
+        [scopeId, operatorId, now()],
+      );
+      return { status: "not_found" };
+    }
+    await pool.q(
+      "INSERT INTO remote_turn_audit_reads(scope_id, operator_id, outcome, created_at) VALUES($1,$2,'granted',$3)",
+      [scopeId, operatorId, now()],
+    );
+    const { rows } = await pool.query(
+      "SELECT e.remote_turn_id, e.seq, e.event_type, e.payload, e.created_at FROM remote_turn_events e " +
+        "JOIN remote_turn t ON t.id = e.remote_turn_id WHERE t.scope_id=$1 ORDER BY e.remote_turn_id, e.seq",
+      [scopeId],
+    );
+    return {
+      status: "ok",
+      events: rows.map((row) => ({
+        remoteTurnId: row.remote_turn_id as string,
+        seq: Number(row.seq),
+        eventType: row.event_type as string,
+        payload: row.payload ? (row.payload as Record<string, unknown>) : null,
+        createdAt: Number(row.created_at),
+      })),
+    };
+  }
+
   async function reconcile(input: {
     remoteTurnId: string;
     outcome: ReconcileOutcome;
@@ -1037,6 +1082,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     listParked,
     listExpiredDispatching,
     reconcile,
+    readAuditChain,
     async close(): Promise<void> {
       await pool.close();
     },
