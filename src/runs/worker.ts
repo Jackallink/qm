@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TurnResult } from "../types.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
-import { NonRetryableTurnError } from "../core/turn-error.ts";
+import { isTerminalTurnError } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import { errorParks, type Run, type RunStore } from "./run-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
@@ -73,7 +73,7 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
   } catch (err) {
     stopBeat();
     await deps.runs.fail(run.id, token, errMessage(err), {
-      retry: !(err instanceof NonRetryableTurnError),
+      retry: !isTerminalTurnError(err),
     });
     throw err;
   } finally {

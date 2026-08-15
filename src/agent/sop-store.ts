@@ -5,7 +5,7 @@
  * 签收：当前 Gate 标记 done，产物冻结，进入下一 Gate。
  * 回退：当前 Gate 标记 superseded，创建新版本，回到指定 Gate。
  */
-import type { SopRun, GateRecord, GateNumber } from "./sop-engine.ts";
+import type { SopRun, GateNumber } from "./sop-engine.ts";
 import { newGateRecord, nextGate, canRollbackTo } from "./sop-engine.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 
@@ -16,7 +16,7 @@ export interface SopRunStore {
   /** 签收当前 Gate，进入下一 Gate */
   signGate(id: string, gate: GateNumber, signedBy: string, productHash?: string, auditScore?: number): Promise<SopRun>;
   /** 回退到指定 Gate（旧产物 superseded，新建版本） */
-  rollback(id: string, toGate: GateNumber, reason: string): Promise<SopRun>;
+  rollback(id: string, toGate: GateNumber, _reason: string): Promise<SopRun>;
   /** 标记 stale / archived */
   updateStatus(id: string, status: SopRun["status"]): Promise<SopRun>;
   /** 更新外部依赖验证时间 */
@@ -78,7 +78,7 @@ export function createSopRunStore(backing: DurableMap<SopRun>): SopRunStore {
       return run;
     },
 
-    async rollback(id: string, toGate: GateNumber, reason: string): Promise<SopRun> {
+    async rollback(id: string, toGate: GateNumber, _reason: string): Promise<SopRun> {
       const run = await backing.get(runKey(id));
       if (!run) throw new Error(`SopRun ${id} not found`);
       if (!canRollbackTo(run.currentGate, toGate))

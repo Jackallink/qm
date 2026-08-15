@@ -17,6 +17,10 @@ test("parseProviderBaseUrl normalizes trailing slashes and whitespace", () => {
   assert.equal(parseProviderBaseUrl("X", " https://gw.example.com/v1// "), "https://gw.example.com/v1");
 });
 
+test("parseProviderBaseUrl keeps HTTP available outside text-only mode", () => {
+  assert.equal(parseProviderBaseUrl("X", "http://gw.example.com/v1/"), "http://gw.example.com/v1");
+});
+
 test("parseProviderBaseUrl rejects bad values", () => {
   assert.throws(() => parseProviderBaseUrl("X", "not a url"));
   assert.throws(() => parseProviderBaseUrl("X", "ftp://gw.example.com"));

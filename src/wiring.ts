@@ -99,6 +99,7 @@ import {
 import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/file-artifact-store.ts";
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
+import { createDisabledSandbox } from "./sandbox/disabled-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
 import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import {
@@ -108,7 +109,7 @@ import {
   type SandboxRoute,
 } from "./sandbox/sandbox-routing.ts";
 import { createSandboxMigrationRunner, type SandboxMigrationRunner } from "./sandbox/sandbox-migration-runner.ts";
-import type { Sandbox, SandboxHandle } from "./sandbox/sandbox.ts";
+import type { Sandbox } from "./sandbox/sandbox.ts";
 import { withOperatorTokenFallback } from "./credentials/connector-token.ts";
 import {
   createAwsSecretsManagerSource,
@@ -164,19 +165,13 @@ import { createCustomProviderStore, type CustomProviderStore } from "./model/cus
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import type { SessionStore } from "./sessions/session-store.ts";
-import { createHermesHarness } from "./harness/hermes-harness.ts";
-import { createClawHarness } from "./harness/claw-harness.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
-import { createAgentRegistryStore } from "./agent/agent-registry.ts";
-import { createSopRunStore } from "./agent/sop-store.ts";
-import { createMessengerStore } from "./agent/messenger-store.ts";
-import { createSchedulerStore } from "./agent/scheduler-store.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
-import { createPrimeHarness } from "./harness/prime-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
+import { NonRetryableTurnError } from "./core/turn-error.ts";
 import type { Harness } from "./harness/harness.ts";
 import { createSecurityScreenProxy, type SecurityScreener } from "./security/security-screener.ts";
 import { createMemoryTaskStore } from "./tasks/memory-task-store.ts";
@@ -273,7 +268,7 @@ import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
 import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
 import { errMessage, swallowAs } from "./util/errors.ts";
-import { sleep } from "./util/async.ts";
+import { createKeyedQueue, sleep } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
 
 export interface Runtime {
@@ -330,10 +325,6 @@ export interface BuiltApp {
   modelCredentials: ModelCredentialStore;
   customProviders: CustomProviderStore;
   refreshCustomProviders: () => Promise<void>;
-  agentRegistry: import("./agent/agent-registry.ts").AgentRegistryStore;
-  sopStore: import("./agent/sop-store.ts").SopRunStore;
-  messengerStore: import("./agent/messenger-store.ts").MessengerStore;
-  schedulerStore: import("./agent/scheduler-store.ts").SchedulerStore;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -357,7 +348,7 @@ export interface BuiltApp {
   memory: MemoryService;
   sandbox: Sandbox;
   advisoryLock: AdvisoryLock;
-  sandboxMigration: SandboxMigrationRunner;
+  sandboxMigration?: SandboxMigrationRunner;
   blobTransfer: BlobTransferStore;
   files: FileArtifactStore;
   livenessCache: LivenessCache;
@@ -469,10 +460,12 @@ export function buildApp(
     artifactMap("slack_installation"),
     config.connectorSecretKey ?? randomBytes(32),
   );
-  const deploymentLayer = config.deploymentLayerDir
-    ? loadDeploymentLayer(config.deploymentLayerDir)
-    : emptyDeploymentLayer();
-  const layerSkillsDir = config.deploymentLayerDir ? resolve(deploymentLayer.dir, "skills") : undefined;
+  const deploymentLayer =
+    !config.textOnlyMode && config.deploymentLayerDir
+      ? loadDeploymentLayer(config.deploymentLayerDir)
+      : emptyDeploymentLayer();
+  const layerSkillsDir =
+    !config.textOnlyMode && config.deploymentLayerDir ? resolve(deploymentLayer.dir, "skills") : undefined;
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
@@ -504,12 +497,16 @@ export function buildApp(
         }
       : {}),
   });
-  const deploymentLayerReady = deploymentLayerStore.hydrate();
-  const deploymentLayerRefresh = createSweeper(() => deploymentLayerStore.hydrate(), 30_000, {
-    label: "deployment layer refresh",
-  });
+  const deploymentLayerReady = config.textOnlyMode ? Promise.resolve(null) : deploymentLayerStore.hydrate();
+  const deploymentLayerRefresh = createSweeper(
+    () => (config.textOnlyMode ? undefined : deploymentLayerStore.hydrate()),
+    30_000,
+    {
+      label: "deployment layer refresh",
+    },
+  );
   let skillsReady: Promise<void>;
-  if (config.seedSkills) {
+  if (!config.textOnlyMode && config.seedSkills) {
     const installCatalogs = async (): Promise<void> => {
       await installSeedSkills(skills, { dir: config.skillsSeedDir, scopeId: orgScope });
       for (const dir of config.pluginSkillDirs) {
@@ -526,11 +523,13 @@ export function buildApp(
       installCatalogs().catch((e) => console.error("[seed] failed to install seed skills:", e)),
       deploymentLayerReady.catch((e) => console.error("[seed] deployment layer not ready:", e)),
     ]).then(() => undefined);
-  } else {
+  } else if (!config.textOnlyMode) {
     skillsReady = deploymentLayerReady.then(
       () => undefined,
       (e) => console.error("[seed] deployment layer not ready:", e),
     );
+  } else {
+    skillsReady = Promise.resolve();
   }
   const rateLimitOpts = { maxPerWindow: config.rateLimitPerWindow, windowMs: config.rateLimitWindowMs };
   const rateLimiter = config.databaseUrl
@@ -606,47 +605,53 @@ export function buildApp(
       onError: sandboxOnError,
     });
   };
-  const buildBackend: Record<Config["sandboxBackend"], () => Sandbox> = {
-    local: buildLocal,
-    sprites: buildSprites,
-    aws: buildAws,
-  };
-  const sandboxBackends: Partial<Record<SandboxBackendName, Sandbox>> = {
-    [config.sandboxBackend]: buildBackend[config.sandboxBackend](),
-  };
-  if (config.sandboxSecondaryBackend && config.sandboxSecondaryBackend !== config.sandboxBackend) {
-    sandboxBackends[config.sandboxSecondaryBackend] = buildBackend[config.sandboxSecondaryBackend]();
+  let sandbox: Sandbox;
+  let sandboxMigration: SandboxMigrationRunner | undefined;
+  if (config.sandboxBackend === "disabled") {
+    sandbox = createDisabledSandbox();
+  } else {
+    const buildBackend: Record<SandboxBackendName, () => Sandbox> = {
+      local: buildLocal,
+      sprites: buildSprites,
+      aws: buildAws,
+    };
+    const sandboxBackends: Partial<Record<SandboxBackendName, Sandbox>> = {
+      [config.sandboxBackend]: buildBackend[config.sandboxBackend](),
+    };
+    if (config.sandboxSecondaryBackend) {
+      sandboxBackends[config.sandboxSecondaryBackend] = buildBackend[config.sandboxSecondaryBackend]();
+    }
+    const sandboxRoutes = artifactMap<SandboxRoute>("sandbox_routing");
+    sandbox = createSandboxRouter({
+      backends: sandboxBackends,
+      routes: sandboxRoutes,
+      defaultBackend: config.sandboxBackend,
+      onError: sandboxOnError,
+    });
+    sandboxMigration = createSandboxMigrationRunner({
+      backends: sandboxBackends,
+      routes: sandboxRoutes,
+      defaultBackend: config.sandboxBackend,
+      advisoryLock,
+      settleMs: ROUTE_CACHE_TTL_MS,
+      provisionOptions: async (scopeId) => {
+        const egressSecret = config.capabilitySecret ?? config.signingSecret;
+        if (!egressSecret) return {};
+        const egressToken = await mintCapabilityToken(
+          {
+            actorId: "system:sandbox-migration",
+            scopeId: scopeId as ScopeId,
+            aud: EGRESS_PROXY_AUD,
+            egress: egressClaimAllowingControlPlane({ allowedHosts: [] }, config.apiBaseUrl ?? "", true),
+            exp: Date.now() + CAPABILITY_TTL_MS,
+          },
+          egressSecret,
+        );
+        return { egressToken };
+      },
+      hasLiveWork: async (scope) => !!processes && (await processes.liveByScope(scope)).length > 0,
+    });
   }
-  const sandboxRoutes = artifactMap<SandboxRoute>("sandbox_routing");
-  const sandbox: Sandbox = createSandboxRouter({
-    backends: sandboxBackends,
-    routes: sandboxRoutes,
-    defaultBackend: config.sandboxBackend,
-    onError: sandboxOnError,
-  });
-  const sandboxMigration = createSandboxMigrationRunner({
-    backends: sandboxBackends,
-    routes: sandboxRoutes,
-    defaultBackend: config.sandboxBackend,
-    advisoryLock,
-    settleMs: ROUTE_CACHE_TTL_MS,
-    provisionOptions: async (scopeId) => {
-      const egressSecret = config.capabilitySecret ?? config.signingSecret;
-      if (!egressSecret) return {};
-      const egressToken = await mintCapabilityToken(
-        {
-          actorId: "system:sandbox-migration",
-          scopeId: scopeId as ScopeId,
-          aud: EGRESS_PROXY_AUD,
-          egress: egressClaimAllowingControlPlane({ allowedHosts: [] }, config.apiBaseUrl ?? "", true),
-          exp: Date.now() + CAPABILITY_TTL_MS,
-        },
-        egressSecret,
-      );
-      return { egressToken };
-    },
-    hasLiveWork: async (scope) => !!processes && (await processes.liveByScope(scope)).length > 0,
-  });
   const secretSource =
     config.secretsBackend === "aws"
       ? createLayeredSecretSource(
@@ -701,186 +706,74 @@ export function buildApp(
   const customProviders = createCustomProviderStore({
     backing: artifactMap("custom_model_providers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
+    advisoryLock,
   });
-  const refreshCustomProviders = async () => {
-    setCustomProviders(await customProviders.enabled());
-  };
+  const customProviderRefreshQueue = createKeyedQueue<string>();
+  const refreshCustomProviders = () =>
+    customProviderRefreshQueue("custom-provider-registry", async () => {
+      setCustomProviders(await customProviders.enabled());
+    });
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
-  const resolveModelProviderKeys = async () => {
-    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
+  const resolveManagedProviderKeys = async () => {
+    const [anthropic, openai, openrouter] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
-      customProviders.enabled(),
     ]);
-    const customKeys = Object.fromEntries(
-      (
-        await Promise.all(
-          enabledCustom.map(async (p) => {
-            try {
-              return [p.id, await customProviders.resolveKey(p.id)] as const;
-            } catch (e) {
-              // A corrupt/undecryptable custom key must degrade that one
-              // provider, never the whole turn (built-ins included).
-              console.error(`[model] custom provider ${p.id}: key unreadable: ${errMessage(e)}`);
-              return [p.id, null] as const;
-            }
-          }),
-        )
-      ).filter(([, key]) => key),
-    );
     return {
       ...(anthropic ? { anthropic } : {}),
       ...(openai ? { openai } : {}),
       ...(openrouter ? { openrouter } : {}),
-      ...customKeys,
     };
   };
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
   const approvalGrants: DurableMap<CommandApprovalGrant> = artifactMap<CommandApprovalGrant>("approval_grants");
-  const agentRegistry = createAgentRegistryStore(artifactMap("agent_registry"));
-  const sopStore = createSopRunStore(artifactMap("sop_runs"));
-  const messengerStore = createMessengerStore(artifactMap("agent_messages"), artifactMap("agent_subscriptions"));
-  const schedulerStore = createSchedulerStore(artifactMap("scheduled_jobs"));
-  // Per-scope prime sandbox handles (provision once, reuse across turns).
-  // Mirrors orchestrator's provision layers: org read-only global + scope rw.
-  const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
-  const primeSandboxHandleFor = (scope: ScopeId): Promise<SandboxHandle> => {
-    // Always provision fresh: QM's sandbox router handles container reuse
-    // internally (keepWarm); cached handles can go stale across core reloads.
-    const pending = sandbox
-      .provision(
-        [
-          { scopeId: runtimeOrgScope, mountPath: "global", mode: "ro" },
-          { scopeId: scope, mountPath: "", mode: "rw" },
-        ],
-        {},
-      )
-      .catch((error: unknown) => {
-        throw error;
-      });
-    primeSandboxHandles.set(scope, pending);
-    return pending;
-  };
+  const piHarness = createPiHarness({
+    ...piHarnessConfigOptions(config),
+    resolveBaseModelId: orgBaseModelId,
+    resolveProviderKeys: resolveManagedProviderKeys,
+    resolveCustomProviderSnapshot: () => customProviders.runtimeSnapshot(),
+    refreshCustomProviders,
+    ...(config.textOnlyMode ? {} : { signals: runSignals }),
+  });
   const adapters = new Map<HarnessId, Harness>([
-    [
-      "pi",
-      createPiHarness({
-        ...piHarnessConfigOptions(config),
-        resolveBaseModelId: orgBaseModelId,
-        resolveProviderKeys: resolveModelProviderKeys,
-        signals: runSignals,
-      }),
-    ],
-    [
-      "opencode",
-      createOpenCodeHarness({
-        ...openCodeHarnessConfigOptions(config),
-        signals: runSignals,
-        tasks,
-        resolveCustomProviders: async () => {
-          const enabled = await customProviders.enabled();
-          return Promise.all(
-            enabled.map(async (spec) => {
-              try {
-                const apiKey = await customProviders.resolveKey(spec.id);
-                return { spec, ...(apiKey ? { apiKey } : {}) };
-              } catch (e) {
-                // An unreadable key must not prevent the opencode server from
-                // starting; the provider is configured keyless and its models
-                // fail individually instead.
-                console.error(`[model] custom provider ${spec.id}: key unreadable: ${errMessage(e)}`);
-                return { spec };
-              }
-            }),
-          );
-        },
-      }),
-    ],
-    ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks })],
-    ["claude", createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks })],
-    [
-      "prime",
-      createPrimeHarness({
-        primeBin: config.primeBinPath,
-        provider: "deepseek",
-        model: config.primeModel ?? "deepseek-v4-flash",
-        sessionDirBase: config.primeSessionDir,
-        args: config.primeArgs ? config.primeArgs.split(",").filter(Boolean) : undefined,
-        env: {
-          DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "",
-          PRIME_AGENT_KERNEL_VENV: "/opt/prime-kernel-venv",
-        },
-        ...(config.primeSandbox
-          ? {
-              sandbox: {
-                sandbox,
-                handleFor: primeSandboxHandleFor,
+    ["pi", piHarness],
+    ...(config.textOnlyMode
+      ? []
+      : [
+          [
+            "opencode",
+            createOpenCodeHarness({
+              ...openCodeHarnessConfigOptions(config),
+              signals: runSignals,
+              tasks,
+              resolveCustomProviders: async () => {
+                const enabled = await customProviders.enabled();
+                return Promise.all(
+                  enabled.map(async (spec) => {
+                    try {
+                      const apiKey = await customProviders.resolveKey(spec.id);
+                      return { spec, ...(apiKey ? { apiKey } : {}) };
+                    } catch (e) {
+                      console.error(`[model] custom provider ${spec.id}: key unreadable: ${errMessage(e)}`);
+                      return { spec };
+                    }
+                  }),
+                );
               },
-            }
-          : {}),
-        resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
-          const grants = await approvalGrants.all();
-          return grants.some((g) => {
-            if (g.approvalKey !== approvalKey) return false;
-            if (g.scope === "always") return true;
-            return g.scope === "session" && g.sessionId === sessionId;
-          });
-        },
-        autoRefine: {
-          interval: 5,
-          onSkill: async (skill) => {
-            // POST to QM's internal skills API via source-auth.
-            const { createHmac } = await import("node:crypto");
-            const body = JSON.stringify({
-              principalId: "jakeliu",
-              scopeId: "personal:jakeliu",
-              name: skill.name,
-              description: skill.description,
-              body: skill.body,
-            });
-            const nowSec = Math.floor(Date.now() / 1000);
-            const canonical = `POST\n/v1/skills\n${body}`;
-            const sig = `v0=${createHmac("sha256", config.signingSecret!).update(`v0:${nowSec}:${canonical}`).digest("hex")}`;
-            const headers: Record<string, string> = {
-              "content-type": "application/json",
-              "x-timestamp": String(nowSec),
-              "x-signature": sig,
-              "x-admin-actor": "jakeliu@acme",
-            };
-            const res = await fetch(`http://127.0.0.1:${config.port}/v1/skills`, {
-              method: "POST",
-              headers,
-              body,
-            });
-            if (res.status < 300) console.error(`[prime-autoRefine] skill imported: ${skill.name}`);
-            else console.error(`[prime-autoRefine] skill import failed: ${res.status}`);
-          },
-        },
-        systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
-      }),
-    ],
-    ["mock", createMockHarness()],
-    [
-      "hermes",
-      createHermesHarness({
-        baseUrl: config.hermesBaseUrl ?? process.env.HERMES_BASE_URL,
-        model: config.hermesModel ?? process.env.HERMES_MODEL,
-        apiKey: process.env.HERMES_API_KEY,
-      }),
-    ],
-    [
-      "claw",
-      createClawHarness({
-        baseUrl: process.env.CLAW_BASE_URL,
-        model: process.env.CLAW_MODEL,
-        apiToken: process.env.CLAW_API_TOKEN,
-      }),
-    ],
+            }),
+          ] as const,
+          ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks })] as const,
+          [
+            "claude",
+            createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks }),
+          ] as const,
+          ["mock", createMockHarness()] as const,
+        ]),
   ]);
   const fallbackHarness = config.harness as HarnessId;
   const fallback = {
@@ -892,12 +785,18 @@ export function buildApp(
     ),
   };
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
-  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) =>
-    resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
+  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, async (input) => {
+    await refreshCustomProviders();
+    const choice = await resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
+      ...(config.textOnlyMode ? { strictHarness: "pi" as const } : {}),
       ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
       ...(input.model ? { modelId: input.model } : {}),
-    }),
-  );
+    });
+    if (config.textOnlyMode && choice.harnessId !== "pi") {
+      throw new NonRetryableTurnError("text-only mode only permits the pi harness");
+    }
+    return choice;
+  });
 
   const leaseTtlMs = config.leaseTtlMs;
   const maxAttempts = config.maxAttempts;
@@ -1043,8 +942,8 @@ export function buildApp(
     }
     return broker;
   };
-  let securityScreener = overrides.securityScreener;
-  if (!securityScreener && config.securityScreenBackend === "proxy") {
+  let securityScreener = config.textOnlyMode ? undefined : overrides.securityScreener;
+  if (!config.textOnlyMode && !securityScreener && config.securityScreenBackend === "proxy") {
     securityScreener = createSecurityScreenProxy({
       provider: config.securityScreenProxy!.provider,
       endpoint: config.securityScreenProxy!.endpoint,
@@ -1055,6 +954,7 @@ export function buildApp(
   }
   const orchestratorDeps: OrchestratorDeps = {
     identity,
+    ...(config.textOnlyMode ? { textOnly: true } : {}),
     resolution,
     config: configStore,
     sessionTapeMode: config.sessionTapeMode,
@@ -1208,6 +1108,7 @@ export function buildApp(
   const providerKeys = providerKeysPresent(config);
   const app = createApp({
     identity,
+    ...(config.textOnlyMode ? { textOnly: true } : {}),
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     sessions,
     orchestrator,
@@ -1216,16 +1117,12 @@ export function buildApp(
     maxAttempts,
     turnStream,
     runActivity,
-    signals: runSignals,
+    ...(config.textOnlyMode ? {} : { signals: runSignals }),
     tasks,
     modelGateway,
     modelCredentials,
     customProviders,
     refreshCustomProviders,
-    agentRegistry,
-    sopStore,
-    messengerStore,
-    schedulerStore,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
     acl,
     admin,
@@ -1288,9 +1185,11 @@ export function buildApp(
       })
       .catch(swallowAs("wake: settle on terminal", undefined));
   });
-  runs.onTerminal((run) => {
-    void app.replayOrphanedRunSignals(run.id).catch(swallowAs("wake: orphaned-signal replay", undefined));
-  });
+  if (!config.textOnlyMode) {
+    runs.onTerminal((run) => {
+      void app.replayOrphanedRunSignals(run.id).catch(swallowAs("wake: orphaned-signal replay", undefined));
+    });
+  }
   runs.onTerminal((run) => {
     void (async () => {
       const uuid = (await sessions.getByThread(run.sessionId))?.id;
@@ -1308,20 +1207,22 @@ export function buildApp(
     })().catch(swallowAs("session-state: terminal emit", undefined));
   });
   let lastSignalPrune = 0;
-  const orphanedSignalSweeper = createSweeper(
-    async () => {
-      for (const runId of await runSignals.pendingRunIds()) {
-        const run = await runs.get(runId);
-        if (!run || isTerminal(run.status)) await app.replayOrphanedRunSignals(runId);
-      }
-      if (Date.now() - lastSignalPrune > 60 * 60_000) {
-        lastSignalPrune = Date.now();
-        await runSignals.prune(7 * 24 * 60 * 60_000);
-      }
-    },
-    config.reaperIntervalMs,
-    { label: "orphaned-signals" },
-  );
+  const orphanedSignalSweeper = config.textOnlyMode
+    ? undefined
+    : createSweeper(
+        async () => {
+          for (const runId of await runSignals.pendingRunIds()) {
+            const run = await runs.get(runId);
+            if (!run || isTerminal(run.status)) await app.replayOrphanedRunSignals(runId);
+          }
+          if (Date.now() - lastSignalPrune > 60 * 60_000) {
+            lastSignalPrune = Date.now();
+            await runSignals.prune(7 * 24 * 60 * 60_000);
+          }
+        },
+        config.reaperIntervalMs,
+        { label: "orphaned-signals" },
+      );
   const wakeSweep: WakeSweep = createWakeSweep(
     {
       async engagedSessions() {
@@ -1500,6 +1401,11 @@ export function buildApp(
       if (!config.backgroundWorkEnabled) return;
       for (const w of workers) w.start();
       reaper.start();
+      if (config.textOnlyMode) {
+        blobSweeper.start();
+        drain.start();
+        return;
+      }
       processReaper?.start();
       monitorPoller?.start(config.monitorPollMs);
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
@@ -1508,7 +1414,7 @@ export function buildApp(
       deepIdleSweeper?.start();
       reachDeniedNotifier?.start(config.insightsIntervalMs);
       wakeSweep.start();
-      orphanedSignalSweeper.start();
+      orphanedSignalSweeper?.start();
       drain.start();
     },
     async releaseInFlightRuns() {
@@ -1524,7 +1430,7 @@ export function buildApp(
       reachDeniedNotifier?.stop();
       blobSweeper.stop();
       wakeSweep.stop();
-      orphanedSignalSweeper.stop();
+      orphanedSignalSweeper?.stop();
       await Promise.all(workers.map((w) => w.stop(config.shutdownDrainMs))).catch(
         swallowAs("wiring: worker drain failed", undefined),
       );
@@ -1561,11 +1467,7 @@ export function buildApp(
     modelGateway,
     modelCredentials,
     customProviders,
-    agentRegistry,
-    sopStore,
     refreshCustomProviders,
-    messengerStore,
-    schedulerStore,
     acl,
     skills,
     skillBundles,
@@ -1588,7 +1490,7 @@ export function buildApp(
     ...(askResolution ? { fireAskResolution: askResolution } : {}),
     ...(dropResolution ? { fireDropResolution: dropResolution } : {}),
     sandbox,
-    sandboxMigration,
+    ...(sandboxMigration ? { sandboxMigration } : {}),
     advisoryLock,
     blobTransfer,
     files,

@@ -22,7 +22,7 @@ function builtinModel(id: string): PiModel | undefined {
   return undefined;
 }
 
-export function getBaseModel(id: string, fallback?: { name: string; provider: string }): PiModel {
+export function getBaseModel(id: string, fallback?: { name: string; provider: string; api?: Api }): PiModel {
   const builtin = builtinModel(id);
   if (builtin) return builtin;
   const clone = CLONE_TEMPLATES[id];
@@ -30,15 +30,19 @@ export function getBaseModel(id: string, fallback?: { name: string; provider: st
     const template = builtinModel(clone.template);
     if (template) return cloneModel(template, id, clone.name);
   }
-  if (fallback?.provider === "openrouter") {
-    const template = getModel("openrouter", "openrouter/auto" as Parameters<typeof getModel>[1]) as PiModel | undefined;
-    if (template) return cloneModel(template, id, fallback.name);
+  if (fallback) {
+    const api = fallback.api ?? (fallback.provider === "openrouter" ? "openai-completions" : undefined);
+    let template: PiModel | undefined;
+    if (api === "anthropic-messages") template = builtinModel("claude-opus-4-8");
+    else if (api === "openai-completions")
+      template = getModel("openrouter", "openrouter/auto" as Parameters<typeof getModel>[1]) as PiModel | undefined;
+    if (template) return cloneModel(template, id, fallback.name, { provider: fallback.provider, api });
   }
   throw new Error(`Unsupported model: ${id}`);
 }
 
-function cloneModel(model: PiModel, id: string, name: string): PiModel {
-  return { ...structuredClone(model), id, name };
+function cloneModel(model: PiModel, id: string, name: string, overrides: Partial<PiModel> = {}): PiModel {
+  return { ...structuredClone(model), id, name, ...overrides };
 }
 
 const fastModeByScope = new Map<string, Set<string>>();

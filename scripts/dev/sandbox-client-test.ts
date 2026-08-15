@@ -38,7 +38,6 @@ async function main() {
 
   log("turn1: 记住 42");
   const types = new Set<string>();
-  const origOnEvent = (io as any).options ? undefined : undefined;
   // 观察事件类型：临时订阅
   const watch = (e: any) => { types.add((e as any).type); };
   const prevEvt = (client as any).options.onEvent;

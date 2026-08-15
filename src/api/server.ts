@@ -21,6 +21,7 @@ import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER, type PortalIdentity } fro
 import { isUserScoped, userScopedField, assertedActor, isUnclassifiedWrite } from "./user-scoped-routes.ts";
 import { errMessage } from "../util/errors.ts";
 import { parseScopeId } from "../types.ts";
+import { CapabilityUnsupportedError } from "../sandbox/sandbox.ts";
 import { canonicalPayload, PayloadTooLargeError, readRawBody, sendJson, verifyOrReject } from "./http.ts";
 import { dispatch, findRoute, run, type ApiCtx, type BaseCtx, type Route, type RouteAuth } from "./routes/route.ts";
 import { apiRoutes, rawRoutes } from "./routes/index.ts";
@@ -297,6 +298,16 @@ function respondError(req: IncomingMessage, res: ServerResponse, err: unknown): 
   if (err instanceof PayloadTooLargeError) {
     if (!res.headersSent) sendJson(res, 413, { error: "payload_too_large", message: errMessage(err) });
     else res.destroy();
+    return;
+  }
+  if (err instanceof CapabilityUnsupportedError) {
+    if (!res.headersSent) {
+      sendJson(res, 501, {
+        error: "capability_unsupported",
+        backend: err.backend,
+        capability: err.capability,
+      });
+    } else res.destroy();
     return;
   }
   console.error(`[server] 500 ${req.method ?? "?"} ${req.url ?? "?"}:`, err);

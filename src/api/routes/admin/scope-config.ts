@@ -38,6 +38,7 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
 
   const actor = await authorizeAdmin(ctx, targetScope);
   if (!actor) return;
+  await deps.refreshCustomProviders?.();
   const withScopeMutationLock = async <T>(fn: () => Promise<T>): Promise<T> =>
     deps.advisoryLock ? deps.advisoryLock.withLock(`admin-governance:${targetScope}`, fn) : fn();
 
@@ -200,6 +201,7 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   if (!targetScope || targetScope.includes("/")) return sendJson(res, 404, { error: "not_found" });
   const actor = await authorizeAdmin(ctx, targetScope);
   if (!actor) return;
+  await deps.refreshCustomProviders?.();
   await deps.config.refreshScope(targetScope);
   audit(deps, { principalId: actor.id, action: "config.read", resource: "config", scopeLabel: targetScope });
   const serviceCredentials = await Promise.all(

@@ -46,6 +46,7 @@ import {
   resolveBuildRepoRoot,
   runInherit,
   sleep,
+  sourceBuildInfo,
   streamLabeled,
 } from "../util.ts";
 import { doctorCommon } from "./doctor.ts";
@@ -444,22 +445,6 @@ function workloadImageProvenance(
   const source = workloadSourceImage(config, workload, plugin);
   if (!source) throw new CliError(`AWS workload ${workload} has no source image`);
   return { kind: "configured", source };
-}
-
-const sourceBuildInfoByRoot = new Map<string, { gitCommit?: string; dirty?: boolean }>();
-
-function sourceBuildInfo(root: string): { gitCommit?: string; dirty?: boolean } {
-  const cached = sourceBuildInfoByRoot.get(root);
-  if (cached) return cached;
-  const info: { gitCommit?: string; dirty?: boolean } = {};
-  try {
-    info.gitCommit = capture("git", ["-C", root, "rev-parse", "HEAD"]).trim();
-    info.dirty = capture("git", ["-C", root, "status", "--porcelain"]).trim().length > 0;
-  } catch {
-    void 0;
-  }
-  sourceBuildInfoByRoot.set(root, info);
-  return info;
 }
 
 function sourceImageDigest(source: string): string {

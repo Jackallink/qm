@@ -213,6 +213,27 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(openCode.env.HARNESS, "opencode");
   assert.equal(openCode.env.PI_CAPTURE_REQUESTS, undefined);
 
+  const explicitMock = await assembleEnv({
+    worktree,
+    callerEnv: { ANTHROPIC_API_KEY: "from-caller", HARNESS: "mock" },
+    allowMock: true,
+    log,
+    probeLoginShell: async () => "",
+  });
+  assert.equal(explicitMock.harness, "mock");
+  assert.equal(explicitMock.env.HARNESS, "mock");
+
+  await assert.rejects(
+    assembleEnv({
+      worktree,
+      callerEnv: { ANTHROPIC_API_KEY: "from-caller", HARNESS: "mock" },
+      allowMock: false,
+      log,
+      probeLoginShell: async () => "",
+    }),
+    /HARNESS=mock requires DEV_INSTANCE_ALLOW_MOCK=1/,
+  );
+
   await assert.rejects(
     assembleEnv({ worktree, callerEnv: { HARNESS: "codex" }, allowMock: false, log, probeLoginShell: async () => "" }),
     /HARNESS=codex needs OPENAI_API_KEY/,

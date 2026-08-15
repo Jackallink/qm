@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   MODEL_PROVIDER_KEYS,
+  isLocalDockerTextOnlyProfile,
   mockHarnessWarning,
   validatePortalTrust,
   type ModelProvider,
@@ -190,11 +191,12 @@ export async function doctorCommon(
   }
   if (config.services.includes("portal")) {
     validatePortalTrust(config, "config", opts.requiredSecretValues ? secrets : undefined);
-    step(
-      config.services.includes("auth")
-        ? "built-in sign-in broker and email trust boundary: ok"
-        : "portal OIDC client and tenant trust boundary: ok",
-    );
+    let portalStep = "portal OIDC client and tenant trust boundary: ok";
+    if (config.services.includes("auth")) portalStep = "built-in sign-in broker and email trust boundary: ok";
+    if (isLocalDockerTextOnlyProfile(config)) {
+      portalStep = "local Docker portal: development health-only; browser login/admin are outside this profile";
+    }
+    step(portalStep);
   }
   if (config.services.includes("auth")) await authBrokerCheck(config, secrets, opts.requiredSecretValues === true);
   await baseModelCheck(config, secrets);
@@ -205,7 +207,11 @@ async function baseModelCheck(config: QmConfig, secrets: Map<string, string>): P
   if (mockHarness) warn(mockHarness);
   const provider = config.modelProvider;
   if (!provider) {
-    step("base model: no modelProvider set — an administrator supplies the key from the Admin page");
+    step(
+      isLocalDockerTextOnlyProfile(config)
+        ? "base model: no modelProvider set — the D0-L host bootstrap supplies a custom provider and Pi runtime"
+        : "base model: no modelProvider set — an administrator supplies the key from the Admin page",
+    );
     return;
   }
   const name = MODEL_PROVIDER_KEYS[provider];

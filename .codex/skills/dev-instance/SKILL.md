@@ -143,10 +143,13 @@ the full real stack when a test doesn't need it:
 
 ```bash
 DEV_INSTANCE_ALLOW_MOCK=1 bash scripts/dev-instance.sh up
+HARNESS=mock DEV_INSTANCE_ALLOW_MOCK=1 bash scripts/dev-instance.sh up
 DEV_INSTANCE_ALLOW_MEMORY=1 bash scripts/dev-instance.sh up
 DEV_INSTANCE_WATCH=0 bash scripts/dev-instance.sh up
 DEV_INSTANCE_RECLAIM_STALE=0 bash scripts/dev-instance.sh up
 ```
+
+`HARNESS=mock` together with `DEV_INSTANCE_ALLOW_MOCK=1` forces a mock-only run even when model credentials are available in the shell or dev env file.
 
 ## Env Discovery
 

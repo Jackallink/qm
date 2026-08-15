@@ -30,8 +30,9 @@ export interface Config {
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
   harness: "mock" | "pi" | "opencode" | "codex" | "claude";
+  textOnlyMode: boolean;
   securityPosture: SecurityPosture;
-  sandboxBackend: "aws" | "local" | "sprites";
+  sandboxBackend: "aws" | "disabled" | "local" | "sprites";
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
   deployProvider: "docker" | "aws";
   egressServiceHosts?: string[];
@@ -44,13 +45,6 @@ export interface Config {
   claudeModel?: string;
   claudeBinPath?: string;
   claudeProcessEnv: NodeJS.ProcessEnv;
-  primeModel?: string;
-  primeBinPath?: string;
-  primeSessionDir?: string;
-  primeArgs?: string;
-  primeSandbox?: boolean;
-  hermesBaseUrl?: string;
-  hermesModel?: string;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;
@@ -483,8 +477,18 @@ function harnessEnvStrict(value: string | undefined): Config["harness"] {
 function sandboxBackendEnvStrict(value: string | undefined, name = "SANDBOX_BACKEND"): Config["sandboxBackend"] {
   if (value === undefined || value.trim() === "") return "local";
   const backend = value.trim();
-  if (backend === "aws" || backend === "local" || backend === "sprites") return backend;
-  throw new Error(`${name}=${JSON.stringify(value)} is not recognized — use aws, local, or sprites, or unset it.`);
+  if (backend === "aws" || backend === "disabled" || backend === "local" || backend === "sprites") return backend;
+  throw new Error(
+    `${name}=${JSON.stringify(value)} is not recognized — use aws, disabled, local, or sprites, or unset it.`,
+  );
+}
+
+function sandboxSecondaryBackendEnvStrict(value: string | undefined): NonNullable<Config["sandboxSecondaryBackend"]> {
+  const backend = sandboxBackendEnvStrict(value, "SANDBOX_SECONDARY_BACKEND");
+  if (backend === "disabled") {
+    throw new Error("SANDBOX_SECONDARY_BACKEND cannot be disabled — disabled is only valid as SANDBOX_BACKEND.");
+  }
+  return backend;
 }
 
 function secretsBackendEnvStrict(value: string | undefined, prefix: string): Config["secretsBackend"] {
@@ -586,15 +590,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const dataDir = resolve(env.DATA_DIR ?? "./data");
   if (env.NODE_ENV === "production" && !env.SANDBOX_BACKEND?.trim()) {
-    throw new Error("SANDBOX_BACKEND must be set explicitly in production — use sprites, aws, or local.");
+    throw new Error("SANDBOX_BACKEND must be set explicitly in production — use disabled, sprites, aws, or local.");
   }
   const sandboxBackend = sandboxBackendEnvStrict(env.SANDBOX_BACKEND);
   const secondaryRaw = env.SANDBOX_SECONDARY_BACKEND?.trim();
   let sandboxSecondaryBackend: Config["sandboxSecondaryBackend"];
   if (secondaryRaw) {
-    const secondary = sandboxBackendEnvStrict(secondaryRaw, "SANDBOX_SECONDARY_BACKEND");
+    if (sandboxBackend === "disabled") {
+      throw new Error("SANDBOX_SECONDARY_BACKEND cannot be set when SANDBOX_BACKEND=disabled.");
+    }
+    const secondary = sandboxSecondaryBackendEnvStrict(secondaryRaw);
     if (secondary === sandboxBackend) throw new Error("SANDBOX_SECONDARY_BACKEND must differ from SANDBOX_BACKEND.");
     sandboxSecondaryBackend = secondary;
+  }
+  const harness = harnessEnvStrict(env.HARNESS);
+  const memoryRecall = parseMemoryRecallMode(env.MEMORY_RECALL);
+  const memoryCapture = parseMemoryCaptureMode(env.MEMORY_CAPTURE);
+  const textOnlyMode = boolEnvStrict("TEXT_ONLY_MODE", env.TEXT_ONLY_MODE) ?? false;
+  if (textOnlyMode) {
+    if (harness !== "pi") throw new Error("TEXT_ONLY_MODE requires HARNESS=pi.");
+    if (sandboxBackend !== "disabled") throw new Error("TEXT_ONLY_MODE requires SANDBOX_BACKEND=disabled.");
+    if (memoryRecall !== "off" || memoryCapture !== "off") {
+      throw new Error("TEXT_ONLY_MODE requires MEMORY_RECALL=off and MEMORY_CAPTURE=off.");
+    }
   }
   const securityScreenBackend = securityScreenBackendEnvStrict(env.SECURITY_SCREEN_BACKEND);
   const proxyProvider = env.SECURITY_SCREEN_PROXY_PROVIDER?.trim();
@@ -609,6 +627,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if (securityScreenBackend === "model" && hasProxyConfig) {
     throw new Error("SECURITY_SCREEN_PROXY_* requires SECURITY_SCREEN_BACKEND=proxy");
+  }
+  if (textOnlyMode && securityScreenBackend === "proxy") {
+    throw new Error("TEXT_ONLY_MODE does not permit SECURITY_SCREEN_BACKEND=proxy.");
   }
   if (proxyProvider && (proxyProvider.length > 63 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(proxyProvider))) {
     throw new Error("SECURITY_SCREEN_PROXY_PROVIDER must be a lowercase DNS label");
@@ -699,7 +720,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
-    harness: harnessEnvStrict(env.HARNESS),
+    harness,
+    textOnlyMode,
     securityPosture: securityPostureEnvStrict(env.HARNESS_SECURITY_POSTURE),
     securityScreenBackend,
     ...(securityScreenBackend === "proxy"
@@ -731,11 +753,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.CLAUDE_MODEL ? { claudeModel: env.CLAUDE_MODEL } : {}),
     ...(env.CLAUDE_BIN ? { claudeBinPath: env.CLAUDE_BIN } : {}),
     claudeProcessEnv,
-    ...(env.PRIME_MODEL ? { primeModel: env.PRIME_MODEL } : {}),
-    ...(env.PRIME_BIN ? { primeBinPath: env.PRIME_BIN } : {}),
-    ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
-    ...(env.PRIME_ARGS ? { primeArgs: env.PRIME_ARGS } : {}),
-    ...(env.PRIME_SANDBOX ? { primeSandbox: boolEnvStrict("PRIME_SANDBOX", env.PRIME_SANDBOX) } : {}),
     ...(env.PI_DETECT_MODEL ? { detectModelId: env.PI_DETECT_MODEL } : {}),
     ...(env.PI_TITLE_MODEL ? { titleModelId: env.PI_TITLE_MODEL } : {}),
     ...(env.PI_JUDGE_MODEL ? { judgeModelId: env.PI_JUDGE_MODEL } : {}),
@@ -806,13 +823,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(slack ? { slack } : {}),
     runStore,
     ...(env.SKILL_SIGNING_SECRET ? { skillSigningSecret: env.SKILL_SIGNING_SECRET } : {}),
-    seedSkills: boolEnvStrict("SEED_SKILLS", env.SEED_SKILLS) ?? true,
+    seedSkills: textOnlyMode ? false : (boolEnvStrict("SEED_SKILLS", env.SEED_SKILLS) ?? true),
     skillsSeedDir: resolve(env.SKILLS_SEED_DIR ?? "./skills-seed"),
-    pluginSkillDirs: csvPaths(env.PLUGIN_SKILLS_DIRS) ?? defaultPluginSkillDirs(),
+    pluginSkillDirs: textOnlyMode ? [] : (csvPaths(env.PLUGIN_SKILLS_DIRS) ?? defaultPluginSkillDirs()),
     ...(env.DEPLOYMENT_LAYER ? { deploymentLayerDir: resolve(env.DEPLOYMENT_LAYER) } : {}),
     layerEnv: { ...env },
-    memoryRecall: parseMemoryRecallMode(env.MEMORY_RECALL),
-    memoryCapture: parseMemoryCaptureMode(env.MEMORY_CAPTURE),
+    memoryRecall,
+    memoryCapture,
     memoryStrategy: parseMemoryStrategyKind(env.MEMORY_STRATEGY),
     ...(numEnvStrict("MEMORY_CONSOLIDATE_AFTER", env.MEMORY_CONSOLIDATE_AFTER) !== undefined
       ? { memoryConsolidateAfter: numEnvStrict("MEMORY_CONSOLIDATE_AFTER", env.MEMORY_CONSOLIDATE_AFTER) }

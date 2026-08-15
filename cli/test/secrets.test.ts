@@ -259,6 +259,52 @@ test("real harnesses require and route the sandbox-reachable PUBLIC_API_URL to c
   assert.ok(
     !computedSecrets(makeConfig({ env: { core: { HARNESS: "mock" } } })).some((s) => s.name === "PUBLIC_API_URL"),
   );
+  assert.ok(
+    !computedSecrets(makeConfig({ env: { core: { HARNESS: "pi" } }, sandbox: { backend: "disabled" } })).some(
+      (s) => s.name === "PUBLIC_API_URL",
+    ),
+    "Pi with the disabled Docker substrate never grants a sandbox-reachable self API",
+  );
+});
+
+test("the local Docker text-only profile has no built-in OIDC or base-model secret requirement", () => {
+  const local = makeConfig({
+    publicUrl: "http://127.0.0.1:8081",
+    services: ["core", "web-ui", "admin", "portal"],
+    sandbox: { backend: "disabled" },
+    env: {
+      core: {
+        HARNESS: "pi",
+        NODE_ENV: "production",
+        TEXT_ONLY_MODE: "true",
+        MEMORY_RECALL: "off",
+        MEMORY_CAPTURE: "off",
+      },
+      portal: { NODE_ENV: "development" },
+    },
+    secretEnv: { core: { ADMIN_GRANTS: "ADMIN_GRANTS" } },
+  });
+  for (const name of [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OIDC_CLIENT_ID",
+    "OIDC_CLIENT_SECRET",
+    "PORTAL_EXPECTED_TEAM_ID",
+    "PUBLIC_API_URL",
+  ]) {
+    assert.ok(
+      !computedSecrets(local).some((secret) => secret.name === name && secret.required),
+      `${name} is not required`,
+    );
+  }
+  assert.equal(secretByName(local, "ADMIN_GRANTS").required, true);
+  for (const service of ["web-ui", "admin"] as const) {
+    assert.deepEqual(runtimeSecretNames(service, secretByName(local, "CORE_SIGNING_SECRET")), ["CORE_SIGNING_SECRET"]);
+    assert.deepEqual(runtimeSecretNames(service, secretByName(local, "PORTAL_IDENTITY_SECRET")), [
+      "PORTAL_IDENTITY_SECRET",
+    ]);
+  }
 });
 
 test("FLY_TEMPLATE_ENV_DEFAULTS stays in sync with deploy/core/fly.toml", () => {

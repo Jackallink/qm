@@ -29,8 +29,6 @@ export interface HermesHarnessOptions {
 export function createHermesHarness(opts: HermesHarnessOptions = {}): Harness {
   const baseUrl = (opts.baseUrl ?? "http://hermes:8080").replace(/\/$/, "");
   const agentPath = opts.agentPath ?? "/api/v1/agent/run";
-  const timeoutMs = opts.timeoutMs ?? 300_000;
-
   const profile = {
     id: "hermes" as const,
     controlTransport: "json-rpc" as const,

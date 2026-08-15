@@ -6,8 +6,10 @@ import { defaultModelForHarness, modelProviderAvailabilityFor } from "./model/pi
 import { effectiveEgressEnforcement } from "./sandbox/sandbox.ts";
 import { slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
 import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
+import { installTextOnlyNoRedirectFetch } from "./core/text-only.ts";
 
 const config = loadConfig();
+if (config.textOnlyMode) installTextOnlyNoRedirectFetch();
 
 const built = buildApp(config);
 const envSlackConfig = slackPluginConfigFromEnv(process.env);
@@ -18,6 +20,7 @@ if (slackConfig) slackEnvironmentState = "configured";
 else if (envSlackAttempted) slackEnvironmentState = "partial";
 const server = createServer(built.app, {
   production: config.production,
+  ...(config.textOnlyMode ? { textOnly: true } : {}),
   allowUnauthenticatedCore: config.allowUnauthenticatedCore,
   ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
   ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
@@ -35,10 +38,6 @@ const server = createServer(built.app, {
   modelCredentials: built.modelCredentials,
   customProviders: built.customProviders,
   refreshCustomProviders: built.refreshCustomProviders,
-  agentRegistry: built.agentRegistry,
-  sopStore: built.sopStore,
-  messengerStore: built.messengerStore,
-  schedulerStore: built.schedulerStore,
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,
@@ -68,7 +67,7 @@ const server = createServer(built.app, {
   ...(config.awsDeploy.gateSecret ? { deployGateSecret: config.awsDeploy.gateSecret } : {}),
   ...(config.deployAppsSessionSecret ? { deployAppsSessionSecret: config.deployAppsSessionSecret } : {}),
   ...(config.deployAppsLoginUrl ? { deployAppsLoginUrl: config.deployAppsLoginUrl } : {}),
-  scheduler: built.scheduler,
+  ...(config.textOnlyMode ? {} : { scheduler: built.scheduler }),
   identity: built.identity,
   ...(built.keychain ? { keychain: built.keychain } : {}),
   serviceCreds: built.serviceCreds,
@@ -94,13 +93,13 @@ const server = createServer(built.app, {
   ...(built.ackEmojiPicks ? { ackEmojiPicks: built.ackEmojiPicks } : {}),
   channelPolicy: built.channelPolicy,
   environments: built.environments,
-  sandboxMigration: built.sandboxMigration,
+  ...(built.sandboxMigration ? { sandboxMigration: built.sandboxMigration } : {}),
 });
 
 await built.config.hydrate?.();
 await built.identity.hydrate();
 await built.deploymentLayerReady;
-built.deploymentLayerRefresh.start();
+if (!config.textOnlyMode) built.deploymentLayerRefresh.start();
 built.runtime.start();
 
 server.listen(config.port, () => {
@@ -110,10 +109,10 @@ server.listen(config.port, () => {
   );
 });
 
-if (config.backgroundWorkEnabled) {
+if (config.backgroundWorkEnabled && !config.textOnlyMode) {
   built.scheduler.start(1000);
 } else {
-  console.log("[qm] background work disabled; scheduler and runtime loops will not start");
+  console.log("[qm] scheduler disabled");
 }
 
 const slackRuntime = createSlackRuntimeReconciler({
@@ -135,14 +134,15 @@ const slackRuntime = createSlackRuntimeReconciler({
   startPlugin: (desired) => startSlackPlugin(desired, built.slackCore),
   onError: (error) => console.error(`[qm] slack plugin reconciliation failed: ${errMessage(error)}`),
 });
-slackRuntime.start();
+if (!config.textOnlyMode) slackRuntime.start();
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[qm] ${signal} received, shutting down`);
-  void slackRuntime.stop().catch((e: unknown) => console.error("[qm] slack plugin stop failed:", errMessage(e)));
+  if (!config.textOnlyMode)
+    void slackRuntime.stop().catch((e: unknown) => console.error("[qm] slack plugin stop failed:", errMessage(e)));
   built.scheduler.stop();
   built.deploymentLayerRefresh.stop();
   server.close();

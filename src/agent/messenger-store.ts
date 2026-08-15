@@ -29,7 +29,7 @@ export interface MessengerStore {
   /** 标记消息已处理 */
   ack(messageId: string): Promise<void>;
   /** 标记消息失败（触发重试） */
-  nack(messageId: string, error: string): Promise<void>;
+  nack(messageId: string, _error: string): Promise<void>;
   /** 获取死信消息 */
   getDeadLetters(): Promise<AgentMessage[]>;
 
@@ -43,7 +43,7 @@ export interface MessengerStore {
   getStaleSubscriptions(heartbeatTimeoutMs?: number): Promise<AgentSubscription[]>;
 
   /** 生成新 secret（Agent 重启时） */
-  rotateSecret(agentId: string): Promise<string>;
+  rotateSecret(_agentId: string): Promise<string>;
 }
 
 export function createMessengerStore(
@@ -94,7 +94,7 @@ export function createMessengerStore(
       await messages.put(msgKey(messageId), msg);
     },
 
-    async nack(messageId: string, error: string): Promise<void> {
+    async nack(messageId: string, _error: string): Promise<void> {
       const msg = await messages.get(msgKey(messageId));
       if (!msg) return;
       msg.retryCount += 1;
@@ -146,7 +146,7 @@ export function createMessengerStore(
       return all.filter((s) => s.active && now - s.lastHeartbeat > timeout);
     },
 
-    async rotateSecret(agentId: string): Promise<string> {
+    async rotateSecret(_agentId: string): Promise<string> {
       agentSecret = randomUUID();
       return agentSecret;
     },

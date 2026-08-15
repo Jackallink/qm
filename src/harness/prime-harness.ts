@@ -204,11 +204,9 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     const label = [request.title, request.message].filter(Boolean).join(" — ") || request.method;
     const approvalKey = `tool:${label}`;
     const gate = input.toolApprovalGate;
-    const granted = gate
-      ? gate(approvalKey)
-      : opts.resolveApprovalGrant
-        ? await opts.resolveApprovalGrant(scope, input.session.id, approvalKey)
-        : false;
+    let granted = false;
+    if (gate) granted = gate(approvalKey);
+    else if (opts.resolveApprovalGrant) granted = await opts.resolveApprovalGrant(scope, input.session.id, approvalKey);
     if (granted) {
       if (request.method === "confirm") {
         await client.respondExtensionUi(request.id, { confirmed: true });

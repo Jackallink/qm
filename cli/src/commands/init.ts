@@ -271,6 +271,13 @@ export function runInit(opts: {
   const configPath = join(dir, CONFIG_FILENAME);
   const existingConfigPath = configPathInDir(dir);
   if (existingConfigPath) die(`${existingConfigPath} already exists — refusing to overwrite.`);
+  const target: Target = opts.target ?? "docker";
+  if (target === "docker" && process.env.QM_BASE_PORT?.trim()) {
+    die(`QM_BASE_PORT is not supported for the local Docker text-only profile; set "basePort" after initialization instead`);
+  }
+  if (target === "docker" && opts.modelProvider !== undefined) {
+    die(`--model-provider is not supported for the local Docker text-only profile; register a custom provider with host bootstrap`);
+  }
   const preparedPackage = packageContent(dir, orgId);
 
   mkdirSync(dir, { recursive: true });
@@ -278,14 +285,15 @@ export function runInit(opts: {
     die(`${join(dir, ".env")} is tracked by Git — refusing to generate signing keys into it`);
   }
 
-  const target: Target = opts.target ?? "docker";
-  const modelProvider: ModelProvider = opts.modelProvider ?? "anthropic";
+  const modelProvider = opts.modelProvider ?? (target === "docker" ? undefined : "anthropic");
   const emailTransport: EmailTransport = opts.emailTransport ?? "resend";
   const provider = hostingProvider(target);
   writeFileSync(configPath, provider.scaffold.renderConfig(orgId, modelProvider, emailTransport));
-  ok(`wrote ${CONFIG_FILENAME} (orgId=${orgId}, target=${target}, modelProvider=${modelProvider})`);
 
   const config = loadConfigAt(configPath).config;
+  ok(
+    `wrote ${CONFIG_FILENAME} (orgId=${orgId}, target=${target}, modelProvider=${config.modelProvider ?? "host-bootstrap"})`,
+  );
   writePackage(dir, preparedPackage);
   writeIfAbsent(dir, [".env.example"], renderEnvExample(config));
   ensureGitignore(dir, provider.scaffold.ignores);
@@ -295,7 +303,7 @@ export function runInit(opts: {
   const manifests = renderSlackManifests(config);
   writeIfAbsent(dir, ["slack-app-manifest.yml"], manifests.bot);
   if (usesSlackOidc(config)) writeIfAbsent(dir, ["slack-sso-manifest.yml"], manifests.sso);
-  scaffoldSandbox(dir);
+  if (config.sandbox?.backend !== "disabled") scaffoldSandbox(dir);
   for (const file of provider.scaffold.files(config)) writeIfAbsent(dir, file.segments, file.content);
 
   note("");

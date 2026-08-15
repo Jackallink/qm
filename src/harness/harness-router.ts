@@ -9,48 +9,89 @@ export interface RuntimeChoice {
   modelId: string;
 }
 
+export type RuntimeChoiceRequest = Partial<RuntimeChoice> & { strictHarness?: HarnessId };
+
+interface RuntimeCandidate {
+  choice: RuntimeChoice;
+  deferPiModelValidation: boolean;
+}
+
+function persistedCandidate(harnessId: HarnessId, modelId: string): RuntimeCandidate {
+  return { choice: { harnessId, modelId }, deferPiModelValidation: harnessId === "pi" };
+}
+
+function isApprovedCandidate(candidate: RuntimeCandidate, approved: readonly HarnessId[]): boolean {
+  return (
+    approved.includes(candidate.choice.harnessId) &&
+    (candidate.deferPiModelValidation || modelSupportedByHarness(candidate.choice.modelId, candidate.choice.harnessId))
+  );
+}
+
 export function resolveRuntimeChoice(
   config: Pick<ScopedConfigStore, "getApprovedHarnesses" | "getRuntimeSelection" | "getBaseModel">,
   orgScopeId: ScopeId,
   scope: ScopeId,
   fallback: RuntimeChoice,
-  requested?: Partial<RuntimeChoice>,
+  requested?: RuntimeChoiceRequest,
 ): RuntimeChoice {
-  const approved = config.getApprovedHarnesses() ?? [fallback.harnessId];
+  if (fallback.harnessId === "mock") return fallback;
+  const approved = (config.getApprovedHarnesses() ?? [fallback.harnessId]).filter(isHarnessId);
+  const strictHarness = requested?.strictHarness;
   const orgStored = config.getRuntimeSelection(orgScopeId);
   const orgLegacy = config.getBaseModel(orgScopeId);
-  const configuredOrg =
-    orgStored && isHarnessId(orgStored.harnessId)
-      ? { harnessId: orgStored.harnessId, modelId: orgStored.modelId }
-      : { harnessId: fallback.harnessId, modelId: orgLegacy ?? fallback.modelId };
+  if (strictHarness && orgStored && orgStored.harnessId !== strictHarness) {
+    throw new NonRetryableTurnError(`runtime ${orgStored.harnessId}/${orgStored.modelId} is not permitted in this mode`);
+  }
+  let configuredOrg: RuntimeCandidate;
+  if (orgStored && isHarnessId(orgStored.harnessId)) {
+    configuredOrg = persistedCandidate(orgStored.harnessId, orgStored.modelId);
+  } else if (orgLegacy) {
+    configuredOrg = persistedCandidate(fallback.harnessId, orgLegacy);
+  } else {
+    configuredOrg = { choice: fallback, deferPiModelValidation: false };
+  }
   const firstApproved = approved.find(isHarnessId) ?? fallback.harnessId;
-  const safeFallback =
+  const safeFallback: RuntimeCandidate =
     approved.includes(fallback.harnessId) && modelSupportedByHarness(fallback.modelId, fallback.harnessId)
-      ? fallback
-      : { harnessId: firstApproved, modelId: defaultModelForHarness(firstApproved, fallback.modelId) };
-  const org =
-    approved.includes(configuredOrg.harnessId) &&
-    modelSupportedByHarness(configuredOrg.modelId, configuredOrg.harnessId)
-      ? configuredOrg
-      : safeFallback;
+      ? { choice: fallback, deferPiModelValidation: false }
+      : {
+          choice: { harnessId: firstApproved, modelId: defaultModelForHarness(firstApproved, fallback.modelId) },
+          deferPiModelValidation: false,
+        };
+  const org = isApprovedCandidate(configuredOrg, approved) ? configuredOrg : safeFallback;
   const scopedStored = scope === orgScopeId ? null : config.getRuntimeSelection(scope);
   const scopedLegacy = scope === orgScopeId ? null : config.getBaseModel(scope);
+  if (strictHarness && scopedStored && scopedStored.harnessId !== strictHarness) {
+    throw new NonRetryableTurnError(
+      `runtime ${scopedStored.harnessId}/${scopedStored.modelId} is not permitted in this mode`,
+    );
+  }
   let inherited = org;
   if (scopedStored && isHarnessId(scopedStored.harnessId)) {
-    inherited = { harnessId: scopedStored.harnessId, modelId: scopedStored.modelId };
+    inherited = persistedCandidate(scopedStored.harnessId, scopedStored.modelId);
   } else if (scopedLegacy) {
-    inherited = { harnessId: fallback.harnessId, modelId: scopedLegacy };
+    inherited = persistedCandidate(fallback.harnessId, scopedLegacy);
   }
-  const choice =
+  const hasRequestedChoice = Boolean(requested?.harnessId || requested?.modelId);
+  if (strictHarness && requested?.harnessId && requested.harnessId !== strictHarness) {
+    throw new NonRetryableTurnError(`runtime ${requested.harnessId} is not permitted in this mode`);
+  }
+  const selected: RuntimeCandidate =
     requested?.harnessId || requested?.modelId
-      ? { harnessId: requested.harnessId ?? inherited.harnessId, modelId: requested.modelId ?? inherited.modelId }
+      ? {
+          choice: {
+            harnessId: requested.harnessId ?? inherited.choice.harnessId,
+            modelId: requested.modelId ?? inherited.choice.modelId,
+          },
+          deferPiModelValidation: false,
+        }
       : inherited;
-  if (!approved.includes(choice.harnessId) || !modelSupportedByHarness(choice.modelId, choice.harnessId)) {
-    if (requested?.harnessId || requested?.modelId)
-      throw new NonRetryableTurnError(`runtime ${choice.harnessId}/${choice.modelId} is not approved`);
-    return org;
+  if (!isApprovedCandidate(selected, approved)) {
+    if (hasRequestedChoice)
+      throw new NonRetryableTurnError(`runtime ${selected.choice.harnessId}/${selected.choice.modelId} is not approved`);
+    return org.choice;
   }
-  return choice;
+  return selected.choice;
 }
 
 export async function resolveRuntimeChoiceDurable(
@@ -58,7 +99,7 @@ export async function resolveRuntimeChoiceDurable(
   orgScopeId: ScopeId,
   scope: ScopeId,
   fallback: RuntimeChoice,
-  requested?: Partial<RuntimeChoice>,
+  requested?: RuntimeChoiceRequest,
 ): Promise<RuntimeChoice> {
   const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
   const [orgStored, scopedStored, orgLegacy, scopedLegacy] = await Promise.all([

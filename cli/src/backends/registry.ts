@@ -1,4 +1,4 @@
-import { awsWorkloadArchitecture, loadConfigAt, sandboxImagePinErrors, type QmConfig } from "../config.ts";
+import { awsWorkloadArchitecture, isSandboxDisabled, loadConfigAt, sandboxImagePinErrors, type QmConfig } from "../config.ts";
 import { CliError, errMessage, note } from "../log.ts";
 import type { Target } from "../providers.ts";
 import { syncDeploymentLayer } from "../deployment-layer.ts";
@@ -124,7 +124,7 @@ const docker: HostingProvider = {
         ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
         dryRun: opts.dryRun,
       });
-      if (!opts.dryRun) {
+      if (!opts.dryRun && !isSandboxDisabled(ctx.config)) {
         await syncDeploymentLayer({
           config: ctx.config,
           target: ctx.target,

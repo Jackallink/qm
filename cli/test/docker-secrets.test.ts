@@ -23,6 +23,8 @@ const SECRETS = {
   EXAMPLE_SCREEN_TOKEN: "security-screen-supersecret",
 };
 
+const healthz = async (): Promise<Response> => new Response(null, { status: 200 });
+
 function fakeDocker(dir: string): { argvLog: string; envCopy: string } {
   const argvLog = join(dir, "docker-argv.log");
   const envCopy = join(dir, "env-copy.log");
@@ -46,11 +48,17 @@ if (args[0] === "run") {
   console.log("cid");
   process.exit(0);
 }
+
 if (args[0] === "logs") { console.log("listening on :8080"); process.exit(0); }
 if (args[0] === "volume") { console.error("No such volume"); process.exit(1); }
 if (args[0] === "inspect") {
+  if (args.includes("{{.Image}}")) { console.log("sha256:" + "a".repeat(64)); process.exit(0); }
   if (String(args[args.length - 1]).endsWith("-pg")) { console.error("No such object"); process.exit(1); }
   console.log("true");
+  process.exit(0);
+}
+if (args[0] === "image" && args[1] === "inspect") {
+  console.log(JSON.stringify(["postgres@sha256:" + "b".repeat(64)]));
   process.exit(0);
 }
 process.exit(0);
@@ -137,7 +145,7 @@ test("docker up delivers secrets via a 0600 env-file, never on the docker argv",
     console.log = (...parts: unknown[]): void => void lines.push(parts.join(" "));
     console.warn = console.log;
     const { config } = loadConfigAt(join(dir, CONFIG_FILENAME));
-    await dockerUp(config, dir, {});
+    await dockerUp(config, dir, { fetchImpl: healthz });
 
     const argv = readFileSync(fake.argvLog, "utf8");
     for (const value of Object.values(SECRETS)) {
@@ -268,7 +276,7 @@ test(
       console.log = (): void => {};
       console.warn = console.log;
       const { config } = loadConfigAt(join(dir, CONFIG_FILENAME));
-      await dockerUp(config, dir, {});
+      await dockerUp(config, dir, { fetchImpl: healthz });
 
       const statePath = join(xdg, "qm", "deployments", "sekritpg", "state.json");
       const password = (JSON.parse(readFileSync(statePath, "utf8")) as { pgPassword?: string }).pgPassword;

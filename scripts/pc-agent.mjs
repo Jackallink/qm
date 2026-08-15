@@ -16,11 +16,12 @@
  */
 import { createHmac } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 const CORE = process.env.QM_CORE_URL || "http://localhost:8081";
-const DEVICE_ID = process.env.DEVICE_ID || `pc-${require("node:os").hostname()}`;
+const DEVICE_ID = process.env.DEVICE_ID || `pc-${hostname()}`;
 const SECRET = process.env.CORE_SIGNING_SECRET || "change-me";
 const AGENT_DIR = join(process.env.HOME || "/tmp", ".qm-pc-agent");
 const HEARTBEAT_MS = 10_000;

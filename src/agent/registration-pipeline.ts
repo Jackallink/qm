@@ -11,7 +11,6 @@
  */
 
 import type { AgentManifest } from "./agent-manifest.ts";
-import type { ComplianceGap } from "./compliance-engine.ts";
 
 /** 单道 Gate 的审查结果 */
 export interface RegistrationGateResult {

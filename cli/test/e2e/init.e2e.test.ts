@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILENAME, loadConfigAt } from "../../src/config.ts";
 import { runCli, tmp, rmDir } from "./harness.ts";
 
-test("init --org scaffolds config + generated .env + a runnable sandbox/, which `check` accepts", () => {
+test("init --org scaffolds the D0-L config + generated .env, which `check` accepts", () => {
   const root = tmp("init");
   const dir = join(root, "acme-deploy");
   try {
@@ -17,21 +17,34 @@ test("init --org scaffolds config + generated .env + a runnable sandbox/, which 
     const cfg = loadConfigAt(cfgPath).config;
     assert.equal(cfg.orgId, "acme");
     assert.equal(cfg.target, "docker");
-    assert.deepEqual(cfg.sandbox, { app: "acme-sandboxes" });
+    assert.equal(cfg.publicUrl, "http://127.0.0.1:8081");
+    assert.deepEqual(cfg.sandbox, { backend: "disabled" });
+    assert.deepEqual(cfg.services, ["core", "web-ui", "admin", "portal"]);
+    assert.equal(cfg.env.core?.TEXT_ONLY_MODE, "true");
+    assert.equal(cfg.env.portal?.NODE_ENV, "development");
 
     assert.ok(existsSync(join(dir, ".env.example")), ".env.example written");
     assert.ok(existsSync(join(dir, ".env")), ".env written with generated local keys");
     assert.ok(existsSync(join(dir, "slack-app-manifest.yml")), "Slack bot manifest written");
     assert.equal(existsSync(join(dir, "slack-sso-manifest.yml")), false);
-    assert.ok(existsSync(join(dir, "sandbox", "skills", "greet", "SKILL.md")));
-    assert.ok(existsSync(join(dir, "sandbox", "tools", "example-tool", "tool.json")));
-    const toolBin = join(dir, "sandbox", "tools", "example-tool", "example-tool");
-    assert.ok(existsSync(toolBin), "example tool executable written");
-    assert.ok(statSync(toolBin).mode & 0o111, "example tool is executable");
+    assert.equal(existsSync(join(dir, "sandbox")), false, "D0-L does not scaffold a sandbox layer");
 
     const checked = runCli(["check"], { cwd: dir });
     assert.equal(checked.code, 0, checked.out);
     assert.match(checked.out, /check passed/);
+  } finally {
+    rmDir(root);
+  }
+});
+
+test("init rejects a built-in model provider for D0-L before writing the deployment", () => {
+  const root = tmp("init-d0l-provider");
+  const dir = join(root, "acme-deploy");
+  try {
+    const r = runCli(["init", dir, "--org", "acme", "--model-provider", "anthropic"]);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /not supported for the local Docker text-only profile/);
+    assert.equal(existsSync(join(dir, CONFIG_FILENAME)), false);
   } finally {
     rmDir(root);
   }

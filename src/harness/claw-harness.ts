@@ -29,8 +29,6 @@ export interface ClawHarnessOptions {
 export function createClawHarness(opts: ClawHarnessOptions = {}): Harness {
   const baseUrl = (opts.baseUrl ?? "http://claw-agent:8080").replace(/\/$/, "");
   const agentPath = opts.agentPath ?? "/api/v1/agent/run";
-  const timeoutMs = opts.timeoutMs ?? 300_000;
-
   const profile = {
     id: "claw" as const,
     controlTransport: "json-rpc" as const,

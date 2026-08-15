@@ -39,7 +39,7 @@ export interface PluginEntry {
 }
 
 export interface SandboxConfig {
-  backend?: "sprites" | "aws";
+  backend?: "sprites" | "aws" | "disabled";
   app?: string;
   image?: string;
   baseImage?: string;
@@ -113,6 +113,14 @@ export const MODEL_PROVIDER_KEYS: Readonly<Record<ModelProvider, string>> = {
   openrouter: "OPENROUTER_API_KEY",
 };
 
+export const LOCAL_DOCKER_HOST_ONLY_ENV_NAMES: readonly string[] = [
+  ...Object.values(MODEL_PROVIDER_KEYS),
+  "D0L_PROVIDER_API_KEY",
+];
+
+export const D0_LOCAL_POSTGRES_IMAGE =
+  "postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20";
+
 export const MODEL_PROVIDER_HARNESSES: Readonly<Record<ModelProvider, readonly string[]>> = {
   anthropic: ["pi", "opencode", "claude", "mock"],
   openai: ["pi", "opencode", "codex", "mock"],
@@ -137,6 +145,7 @@ export interface QmConfig {
   model?: string;
   modelProvider?: ModelProvider;
   basePort?: number;
+  postgresImage?: string;
   services: DeclaredServiceName[];
   plugins: PluginEntry[];
   skills: string[];
@@ -153,6 +162,9 @@ export interface QmConfig {
   deployAppPrefix?: string;
   aws?: AwsConfig;
 }
+
+export const isSandboxDisabled = (config: Pick<QmConfig, "sandbox">): boolean =>
+  config.sandbox?.backend === "disabled";
 
 export function securityScreenEnv(config: Pick<QmConfig, "securityScreen">): Record<string, string> {
   const screen = config.securityScreen;
@@ -219,6 +231,10 @@ export function sandboxCoreEnv(
   const missingSecrets: string[] = [];
   const sb = config.sandbox;
   if (!sb) return { env, missingSecrets };
+  if (sb.backend === "disabled") {
+    env.SANDBOX_BACKEND = "disabled";
+    return { env, missingSecrets };
+  }
   if (sb.app) {
     if (!sb.image) throw new CliError(SANDBOX_PIN_PENDING, { clause: "config.v1" });
     const violation = sandboxImagePinErrors(config)[0];
@@ -632,7 +648,23 @@ function validate(raw: unknown, path: string): QmConfig {
     if (typeof v !== "string") throw new CliError(`${path}: "imageOverrides.${k}" must be a string`);
     return v;
   });
+  const postgresImage = o["postgresImage"];
+  if (postgresImage !== undefined && (typeof postgresImage !== "string" || !postgresImage.trim())) {
+    throw new CliError(`${path}: "postgresImage" must be a non-empty image reference`);
+  }
+  if (postgresImage !== undefined && target !== "docker") {
+    throw new CliError(`${path}: "postgresImage" is only supported for target "docker"`);
+  }
   const sandbox = validateSandbox(o["sandbox"], path, target);
+  if (sandbox?.backend === "disabled") {
+    for (const name of ["SANDBOX_BACKEND", "SANDBOX_SECONDARY_BACKEND", "DEPLOYMENT_LAYER"] as const) {
+      if (env.core?.[name] !== undefined || secretEnv.core?.[name] !== undefined) {
+        throw new CliError(`${path}: ${name} is managed by "sandbox.backend" and cannot be overridden`);
+      }
+    }
+    if (plugins.length) throw new CliError(`${path}: "sandbox.backend": "disabled" does not allow "plugins"`);
+    if (skills.length) throw new CliError(`${path}: "sandbox.backend": "disabled" does not allow "skills"`);
+  }
 
   const out: QmConfig = {
     contract,
@@ -645,6 +677,7 @@ function validate(raw: unknown, path: string): QmConfig {
     env,
     imageOverrides,
   };
+  if (typeof postgresImage === "string") out.postgresImage = postgresImage;
   if (Object.keys(secretEnv).length) out.secretEnv = secretEnv;
   if (securityScreen) out.securityScreen = securityScreen;
   if (typeof apiUrl === "string") out.apiUrl = apiUrl.replace(/\/$/, "");
@@ -679,6 +712,7 @@ function validate(raw: unknown, path: string): QmConfig {
     out.aws = validateAws(o["aws"], path, runnableServices(services), configuredSecretNames);
   }
   if (target === "aws" && !out.aws) throw new CliError(`${path}: target "aws" requires an "aws" block`);
+  validateLocalDockerTextOnlyProfile(out, path);
   validateModelProvider(out, path);
   validatePortalTrust(out, path);
   if (target === "aws") {
@@ -712,6 +746,216 @@ function validate(raw: unknown, path: string): QmConfig {
 
 function configuredHarness(config: QmConfig): string {
   return config.env.core?.HARNESS?.trim() || (config.target === "fly" ? "pi" : "mock");
+}
+
+const localDockerServices = ["core", "web-ui", "admin", "portal"] as const;
+
+export const LOCAL_DOCKER_TEXT_ONLY_ENV_ALLOWLIST: Readonly<Record<DeclaredServiceName, readonly string[]>> = {
+  core: ["HARNESS", "NODE_ENV", "TEXT_ONLY_MODE", "MEMORY_RECALL", "MEMORY_CAPTURE"],
+  "web-ui": [],
+  admin: [],
+  portal: ["NODE_ENV"],
+  auth: [],
+  slack: [],
+};
+
+export interface LocalDockerTextOnlyEnvViolation {
+  service: string;
+  name: string;
+}
+
+export function localDockerTextOnlyEnvViolations(
+  config: Pick<QmConfig, "env">,
+): LocalDockerTextOnlyEnvViolation[] {
+  return Object.entries(config.env).flatMap(([service, values]) => {
+    const allowed = new Set(LOCAL_DOCKER_TEXT_ONLY_ENV_ALLOWLIST[service as DeclaredServiceName] ?? []);
+    return Object.keys(values ?? {})
+      .filter((name) => !allowed.has(name))
+      .map((name) => ({ service, name }));
+  });
+}
+
+export function isLocalDockerTextOnlyCandidate(config: QmConfig): boolean {
+  return (
+    config.target === "docker" &&
+    isSandboxDisabled(config) &&
+    config.services.length === localDockerServices.length &&
+    localDockerServices.every((service) => config.services.includes(service))
+  );
+}
+
+export function dockerPostgresImage(config: QmConfig): string {
+  return config.postgresImage ?? (isLocalDockerTextOnlyCandidate(config) ? D0_LOCAL_POSTGRES_IMAGE : "postgres:16");
+}
+
+function hasLocalDockerPortalUrl(config: QmConfig): boolean {
+  let url: URL;
+  try {
+    url = new URL(config.publicUrl);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "http:" &&
+    url.hostname === "127.0.0.1" &&
+    url.port === String((config.basePort ?? 8080) + 1) &&
+    url.pathname === "/" &&
+    !url.search &&
+    !url.hash &&
+    !url.username &&
+    !url.password
+  );
+}
+
+export function isLocalDockerTextOnlyProfile(config: QmConfig): boolean {
+  const core = config.env.core ?? {};
+  const portal = config.env.portal ?? {};
+  const onlyPortalNodeEnv = Object.keys(portal).every((name) => name === "NODE_ENV");
+  const onlyBootstrapSecret = Object.entries(config.secretEnv ?? {}).every(([service, entries]) =>
+    Object.entries(entries ?? {}).every(
+      ([name, storeName]) => service === "core" && name === "ADMIN_GRANTS" && storeName === "ADMIN_GRANTS",
+    ),
+  );
+  return (
+    isLocalDockerTextOnlyCandidate(config) &&
+    hasLocalDockerPortalUrl(config) &&
+    !config.securityScreen &&
+    config.model === undefined &&
+    config.modelProvider === undefined &&
+    config.skills.length === 0 &&
+    config.plugins.length === 0 &&
+    config.services
+      .filter(isServiceName)
+      .every((service) => config.imageOverrides[service] === undefined || isDigestPinned(config.imageOverrides[service]!)) &&
+    Object.keys(config.sandbox ?? {}).every((name) => name === "backend") &&
+    localDockerTextOnlyEnvViolations(config).length === 0 &&
+    isDigestPinned(dockerPostgresImage(config)) &&
+    core.HARNESS?.trim() === "pi" &&
+    core.NODE_ENV?.trim() === "production" &&
+    core.TEXT_ONLY_MODE?.trim() === "true" &&
+    core.MEMORY_RECALL?.trim() === "off" &&
+    core.MEMORY_CAPTURE?.trim() === "off" &&
+    portal.NODE_ENV?.trim() === "development" &&
+    portal.PORTAL_PLAYGROUND === undefined &&
+    portal.PORTAL_LOCAL_AUTH_BYPASS === undefined &&
+    onlyPortalNodeEnv &&
+    onlyBootstrapSecret &&
+    config.secretEnv?.core?.ADMIN_GRANTS === "ADMIN_GRANTS"
+  );
+}
+
+export function validateLocalDockerTextOnlyProfile(config: QmConfig, path: string): void {
+  if (!isLocalDockerTextOnlyCandidate(config)) return;
+  if (process.env.QM_BASE_PORT?.trim()) {
+    throw new CliError(`${path}: local Docker text-only profile does not allow QM_BASE_PORT; set "basePort" instead`);
+  }
+  if ((config.basePort ?? 8080) > 65_532) {
+    throw new CliError(`${path}: local Docker text-only profile requires "basePort" at most 65532`);
+  }
+  if (config.securityScreen) {
+    throw new CliError(`${path}: local Docker text-only profile does not allow "securityScreen"`);
+  }
+  const core = config.env.core ?? {};
+  const portal = config.env.portal ?? {};
+  const envViolations = localDockerTextOnlyEnvViolations(config);
+  const hostOnlyViolations = envViolations.filter(({ name }) => LOCAL_DOCKER_HOST_ONLY_ENV_NAMES.includes(name));
+  if (hostOnlyViolations.length) {
+    throw new CliError(
+      `${path}: local Docker text-only profile does not allow ${hostOnlyViolations.map(({ service, name }) => `env.${service}.${name}`).join(", ")}; model keys are host-only`,
+    );
+  }
+  if (!hasLocalDockerPortalUrl(config)) {
+    throw new CliError(
+      `${path}: local Docker text-only profile requires publicUrl=http://127.0.0.1:${(config.basePort ?? 8080) + 1}`,
+    );
+  }
+  for (const [name, value] of [
+    ["HARNESS", "pi"],
+    ["NODE_ENV", "production"],
+    ["TEXT_ONLY_MODE", "true"],
+    ["MEMORY_RECALL", "off"],
+    ["MEMORY_CAPTURE", "off"],
+  ] as const) {
+    if (core[name]?.trim() !== value) {
+      throw new CliError(`${path}: local Docker text-only profile requires env.core.${name}=${JSON.stringify(value)}`);
+    }
+    if (config.secretEnv?.core?.[name] !== undefined) {
+      throw new CliError(`${path}: local Docker text-only profile requires secretEnv.core.${name} to be unset`);
+    }
+  }
+  if (portal.NODE_ENV?.trim() !== "development") {
+    throw new CliError(`${path}: local Docker text-only profile requires env.portal.NODE_ENV="development"`);
+  }
+  if (config.secretEnv?.portal?.NODE_ENV !== undefined) {
+    throw new CliError(`${path}: local Docker text-only profile requires secretEnv.portal.NODE_ENV to be unset`);
+  }
+  for (const name of ["PORTAL_PLAYGROUND", "PORTAL_LOCAL_AUTH_BYPASS"] as const) {
+    if (portal[name] !== undefined || config.secretEnv?.portal?.[name] !== undefined) {
+      throw new CliError(`${path}: local Docker text-only profile requires env.portal.${name} must be unset`);
+    }
+  }
+  const portalOverrides = Object.keys(portal).filter((name) => name !== "NODE_ENV");
+  if (portalOverrides.length) {
+    throw new CliError(
+      `${path}: local Docker text-only profile only permits env.portal.NODE_ENV (remove ${portalOverrides.join(", ")})`,
+    );
+  }
+  const nonBootstrapSecrets = Object.entries(config.secretEnv ?? {}).flatMap(([service, entries]) =>
+    Object.entries(entries ?? {}).filter(
+      ([name, storeName]) => service !== "core" || name !== "ADMIN_GRANTS" || storeName !== "ADMIN_GRANTS",
+    ),
+  );
+  if (nonBootstrapSecrets.length) {
+    throw new CliError(`${path}: local Docker text-only profile only permits secretEnv.core.ADMIN_GRANTS="ADMIN_GRANTS"`);
+  }
+  if (config.secretEnv?.core?.ADMIN_GRANTS !== "ADMIN_GRANTS") {
+    throw new CliError(`${path}: local Docker text-only profile requires secretEnv.core.ADMIN_GRANTS="ADMIN_GRANTS"`);
+  }
+  if (config.model !== undefined || config.modelProvider !== undefined) {
+    throw new CliError(`${path}: local Docker text-only profile selects its model only through host bootstrap`);
+  }
+  if (config.skills.length) {
+    throw new CliError(`${path}: local Docker text-only profile does not allow "skills"`);
+  }
+  if (config.plugins.length) {
+    throw new CliError(`${path}: local Docker text-only profile does not allow "plugins"`);
+  }
+  const sandboxStray = Object.keys(config.sandbox ?? {}).filter((name) => name !== "backend");
+  if (sandboxStray.length) {
+    throw new CliError(
+      `${path}: "sandbox.backend": "disabled" does not allow ${sandboxStray.map((name) => `"sandbox.${name}"`).join(", ")}`,
+    );
+  }
+  if (!isDigestPinned(dockerPostgresImage(config))) {
+    throw new CliError(
+      `${path}: local Docker text-only profile requires postgresImage to be digest-pinned, or omit it to use the scaffold pin`,
+    );
+  }
+  for (const service of config.services.filter(isServiceName)) {
+    const image = config.imageOverrides[service];
+    if (image !== undefined && !isDigestPinned(image)) {
+      throw new CliError(
+        `${path}: local Docker text-only profile requires imageOverrides.${service} to be digest-pinned, or omit it and use --build-from`,
+      );
+    }
+  }
+  for (const name of [
+    "DEPLOYMENT_LAYER",
+    "MODEL_PROVIDER",
+    "PI_MODEL",
+    "PI_DETECT_MODEL",
+    "PI_TITLE_MODEL",
+    "PI_JUDGE_MODEL",
+  ] as const) {
+    if (core[name] !== undefined || config.secretEnv?.core?.[name] !== undefined) {
+      throw new CliError(`${path}: local Docker text-only profile does not allow ${name}`);
+    }
+  }
+  if (envViolations.length) {
+    throw new CliError(
+      `${path}: local Docker text-only profile only permits env.core.{HARNESS, NODE_ENV, TEXT_ONLY_MODE, MEMORY_RECALL, MEMORY_CAPTURE} and env.portal.NODE_ENV (remove ${envViolations.map(({ service, name }) => `env.${service}.${name}`).join(", ")})`,
+    );
+  }
 }
 
 export function mockHarnessWarning(config: QmConfig): string | undefined {
@@ -798,6 +1042,7 @@ function validateBrokerTrust(config: QmConfig, path: string, secrets?: ReadonlyM
 
 export function validatePortalTrust(config: QmConfig, path = "config", secrets?: ReadonlyMap<string, string>): void {
   if (!config.services.includes("portal")) return;
+  if (isLocalDockerTextOnlyProfile(config)) return;
   if (config.services.includes("auth")) return validateBrokerTrust(config, path, secrets);
   const env = config.env.portal ?? {};
   const issuer = env.OIDC_ISSUER?.trim() || "https://slack.com";
@@ -1252,9 +1497,9 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
   };
   const out: SandboxConfig = {};
   if (o["backend"] !== undefined) {
-    if (o["backend"] !== "sprites" && o["backend"] !== "aws") {
+    if (o["backend"] !== "sprites" && o["backend"] !== "aws" && o["backend"] !== "disabled") {
       throw new CliError(
-        `${path}: "sandbox.backend" must be "sprites" (Fly Sprites, booting the operator-published layer image from the Fly app in "sandbox.app") or "aws" (Lambda MicroVM sandboxes)`,
+        `${path}: "sandbox.backend" must be "sprites" (Fly Sprites, booting the operator-published layer image from the Fly app in "sandbox.app") or "aws" (Lambda MicroVM sandboxes); "disabled" (Docker text-only control plane) is also accepted for target "docker"`,
       );
     }
     out.backend = o["backend"];
@@ -1288,6 +1533,18 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
     const se = validateStringArray(o["secretEnv"], path, "sandbox.secretEnv");
     for (const name of se) assertEnvName(name, `"sandbox.secretEnv" entry`);
     out.secretEnv = se;
+  }
+  if (out.backend === "disabled") {
+    if (target !== "docker") {
+      throw new CliError(`${path}: "sandbox.backend": "disabled" requires target "docker"`);
+    }
+    const stray = (["app", "image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
+    if (stray.length) {
+      throw new CliError(
+        `${path}: "sandbox.backend": "disabled" does not allow ${stray.map((key) => `"sandbox.${key}"`).join(", ")}`,
+      );
+    }
+    return out;
   }
   if (out.backend === "aws") {
     if (target !== "aws") {

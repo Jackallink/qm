@@ -51,6 +51,26 @@
 | Gate | 状态 | 说明 |
 | --- | --- | --- |
 | Gate 1 规格走查 | walkthrough-approved | 2026-08-14：独立 fresh-context 复审通过；direct disabled、text-only Pi、Web dual-secret、错误与恢复路径均已闭合。 |
-| Gate 2 TDD | complete | 04-test-matrix 切片全部实现：config/text-only/disabled-sandbox/custom-provider/Web 双 secret/Docker lifecycle/durable live path；core 107/107、cli 119/119（含新增 loopback-probes 回归测试 5 例），typecheck 与 diff check 通过。 |
+| Gate 2 TDD | complete | 04-test-matrix 切片全部实现：config/text-only/disabled-sandbox/custom-provider/Web 双 secret/Docker lifecycle/durable live path；core 107/107、cli 120/120（含 loopback-probes 回归测试 5 例），typecheck 与 diff check 通过。 |
 | Gate 3 漂移检查 | complete | 偏差均已记录并闭环：镜像源 DNS 失败（Docker 回退官方 registry）、清单对齐上游 security.3（undici 8.9.0）、probe 挂起修复（cli/src/backends/docker.ts + 回归测试）、web-ui 一次瞬态失败（未复现，已记录）。 |
-| Gate 4 发布证据 | in_progress | 自动化、真实 DeepSeek smoke×5、单服务 restart、non-purge down/up、持久化与 secret 边界证据齐全；本次改动（probe 修复/测试/清单对齐/验证文档）已过独立 fresh-context 评审（reviewer，无 blocker）。剩余：整个 D0-L 实现（工作树中其余未提交改动）的独立代码评审。 |
+| Gate 4 发布证据 | complete | 见下方独立评审与验收记录。 |
+
+## 独立评审与验收记录（2026-08-15）
+
+四路 fresh-context 独立评审（reviewer，只读，均未参与实现），每路覆盖一个切面；随后由实现会话补跑评审无法执行的测试：
+
+| 切面 | 结论 | 关键证据 |
+| --- | --- | --- |
+| text-only 边界（src/core/text-only.ts、app-turn、orchestrator、pi-harness、wiring） | 无 blocker/major，7 项契约全部满足 | admission 在 enqueue 前拒绝非文本（runs 零创建）；snapshot 只含可解密 key + HTTPS；Pi 零工具定义、辅助调用全短路；历史投影只留纯文本 user/assistant；非 Pi harness 三层 fail closed；redirect:manual 在 buildApp 前安装且 307 不跟随 |
+| disabled sandbox + model registry（disabled-sandbox.ts、wiring、config、custom-provider-store、server） | 无 blocker/major，路径 F 8 项契约全部满足 | profile 精确；wiring 窄化只建 disabled、零 router/migration/egress token；全方法 reject retryable:false；501/404 映射精确；terminal 判定共享且单次 claim；HTTP endpoint 在 key 验证前拒绝且零 fetch；PUBLIC_API_URL 非必填（config.ts:819 optional spread） |
+| Web/Admin 身份边界 + F0 隔离（web-ui、admin、chassis、wiring、harness 路由） | 无 blocker/major，满足 D0-L 与 F0 规格 | Web 双 secret 独立注入、production 无回退（chassis 回退仅非 production）；token 校验/threadRef 绑定；bootstrap 不发送 x-admin-actor；Portal dev health-only 且 playground/bypass 拒绝；legacy harness/控制面路由 404（36 条路径断言） |
+| CLI host bootstrap/verifier + docker backend（local-docker.ts、docker.ts、config、secrets） | 无 blocker/major，路径 A/B/C 契约全部满足 | loopback URL 严格校验（拒 localhost）；0600 非 symlink；双签名；三次 PUT 顺序与 body 精确；代理 env 三类拒绝；redirect manual + 有界超时 abort；成功判定要求 done+replyComplete+ok+非空 reply；端口仅 127.0.0.1 + IPv6 拒听；镜像证据 digest/HEAD+dirty；卷 non-purge 保留；D0L_PROVIDER_API_KEY 不入注入集；secret 分离断言 |
+
+评审后处置（由实现会话执行）：
+- signedPut 非 2xx 现在读取有界 error body 并带入错误消息（排障体验），新增测试 `local Docker bootstrap surfaces the Core error body with the failure`；cli 120/120 通过。
+- `?d0l=` 随机 query 跨端契约确认：Core 端 canonical 用 `pathname + url.search`（src/api/server.ts:223）与 CLI 签名一致，admin 路由不校验 query，安全。
+- 已知边界（不改动，记录）：secret 文件 lstat 与读取间 TOCTOU 且无 ownership 检查（本地 CLI 场景、0600 文件、同用户攻击面，规格只要求 0600 或更严格）；Web/Admin 在 production 缺失 PORTAL_IDENTITY_SECRET 时以每请求 401 启动而非字面拒绝启动（03-integration-errors 明确接受失败形状，CLI/Core 两层前置检查兜底）。
+
+评审后测试补跑（评审者无 shell，全部由实现会话执行并记录）：core 107/107（含 f0-legacy-isolation 35/35、disabled-sandbox+custom-providers 44/44）、cli 120/120、web-ui 503/503、admin 80/80、typecheck、git diff --check。
+
+真实 Docker 全栈验证在评审后重跑通过：`qm up --build-from` EXIT=0 四服务 ready，DeepSeek smoke run `6c184ea2` 回复匹配。

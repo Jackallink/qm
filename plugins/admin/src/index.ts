@@ -5,13 +5,12 @@ import { createGzip, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { signedRequestHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
 import { json, readBody, cookie } from "../../chassis/src/http.ts";
-import { createBrandingCache, injectBranding, type OrgBranding } from "../../chassis/src/branding.ts";
+import { createBrandingCache, injectBranding, type BrandingCache, type OrgBranding } from "../../chassis/src/branding.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
   CORE_SIGNING_SECRET,
-  PORTAL_IDENTITY_SECRET,
   portFromEnv,
 } from "../../chassis/src/env.ts";
 import { readFileSync } from "node:fs";
@@ -29,13 +28,9 @@ const BASE_HTML = readFileSync(
   "utf8",
 ).replaceAll("__ADMIN_BASE__", () => ADMIN_BASE_PATH);
 const ADMIN_SCRIPT = BASE_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
-const AGENT_PANEL_HTML = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../public/agent-panel.html"),
-  "utf8",
-);
 const ADMIN_CSP = [
   "default-src 'self'",
-  `script-src 'sha256-${createHash("sha256").update(ADMIN_SCRIPT).digest("base64")}' 'sha256-4TxZG76AVs6wAQ6MsYO5z9ikXKlk7yEH+EVeuQXBbvA='`,
+  `script-src 'sha256-${createHash("sha256").update(ADMIN_SCRIPT).digest("base64")}'`,
   "style-src 'unsafe-inline'",
   "img-src 'self' data:",
   "connect-src 'self'",
@@ -59,9 +54,13 @@ async function fetchBrand(): Promise<OrgBranding> {
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
   };
 }
-const brandCache = createBrandingCache(fetchBrand);
+let brandCache: BrandingCache | undefined;
+function getBrandCache(): BrandingCache {
+  if (!brandCache) brandCache = createBrandingCache(fetchBrand);
+  return brandCache;
+}
 async function refreshBrandNow(): Promise<void> {
-  await brandCache.refreshNow();
+  await getBrandCache().refreshNow();
   shellCache = null;
 }
 let shellCache: { key: string; html: string; gzip: Buffer; etag: string } | null = null;
@@ -79,20 +78,20 @@ function brandedShell(branding: OrgBranding): { html: string; gzip: Buffer; etag
 }
 const ALLOW_UNSIGNED_TEST_IDENTITY =
   process.env.NODE_ENV === "test" && process.env.ALLOW_UNSIGNED_TEST_IDENTITY === "1";
+const portalIdentitySecret = process.env.PORTAL_IDENTITY_SECRET?.trim() ||
+  (ALLOW_UNSIGNED_TEST_IDENTITY ? CORE_SIGNING_SECRET : undefined);
 
 function acceptsGzip(req: IncomingMessage): boolean {
   const ae = req.headers["accept-encoding"];
   return typeof ae === "string" && /\bgzip\b/.test(ae);
 }
 
-const LOCAL_AUTH_BYPASS = true; // dev mode — always bypass
 const cookiePrincipal = (req: IncomingMessage): string | null => {
-  if (LOCAL_AUTH_BYPASS) return process.env.PORTAL_DEV_PRINCIPAL || process.env.USER || "jakeliu";
   const raw = req.headers[PORTAL_IDENTITY_HEADER];
   const token = Array.isArray(raw) ? raw[0] : raw;
   const principal =
-    token && PORTAL_IDENTITY_SECRET ? verifyPortalIdentity(token, PORTAL_IDENTITY_SECRET, Date.now())?.p : null;
-  return principal ?? (!CORE_SIGNING_SECRET || ALLOW_UNSIGNED_TEST_IDENTITY ? cookie(req, "admin") : null);
+    token && portalIdentitySecret ? verifyPortalIdentity(token, portalIdentitySecret, Date.now())?.p : null;
+  return principal ?? (ALLOW_UNSIGNED_TEST_IDENTITY ? cookie(req, "admin") : null);
 };
 
 const portalTokenStore = new AsyncLocalStorage<string | undefined>();
@@ -304,8 +303,10 @@ const READS = [
 const server = createServer((req, res) => {
   const raw = req.headers[PORTAL_IDENTITY_HEADER];
   const token = Array.isArray(raw) ? raw[0] : raw;
+  const verifiedToken =
+    token && portalIdentitySecret && verifyPortalIdentity(token, portalIdentitySecret, Date.now()) ? token : undefined;
   void portalTokenStore
-    .run(token, () => handle(req, res))
+    .run(verifiedToken, () => handle(req, res))
     .catch((err: unknown) => {
       console.error("[admin] unhandled request error:", err);
       json(res, 500, { error: "internal_error", message: "internal server error" });
@@ -323,7 +324,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const method = req.method ?? "GET";
 
   const serveShell = async (): Promise<void> => {
-    const shell = brandedShell(await brandCache.forRender());
+    const shell = brandedShell(await getBrandCache().forRender());
     if (req.headers["if-none-match"] === shell.etag) {
       res.writeHead(304, { etag: shell.etag, "cache-control": "no-cache" });
       return void res.end();
@@ -337,15 +338,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     });
     return void res.end(gz ? shell.gzip : shell.html);
   };
-  if (method === "GET" && pathname === "/") return serveShell();
+  const principal = cookiePrincipal(req);
+  if (method === "GET" && pathname === "/") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    return serveShell();
+  }
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
 
   if (method === "GET" && (pathname === "/api/me" || pathname === "/api/whoami")) {
-    const p = cookiePrincipal(req);
-    if (!p) return json(res, 401, { error: "signed_out" });
-    const who = await coreWhoami(p);
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const who = await coreWhoami(principal);
     if (!who) return json(res, 502, { error: "core_unreachable", message: "could not verify admin status" });
-    return json(res, 200, { principal: p, org: ORG, ...who });
+    return json(res, 200, { principal, org: ORG, ...who });
   }
   if (method === "POST" && pathname === "/api/logout") {
     res.writeHead(200, {
@@ -355,7 +359,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return void res.end(JSON.stringify({ ok: true }));
   }
 
-  const principal = cookiePrincipal(req);
   if (method === "GET" && pathname === "/api/scopes") {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/admin/scopes");
@@ -369,40 +372,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return forward(req, res, principal, "GET", "/v1/connectors/catalog");
   }
 
-  // Agent Management Panel
-  // Agent API proxy（转发到 Core，自动带 source-auth）
-  if (pathname.startsWith("/api/agents/")) {
-    if (!principal) return json(res, 401, { error: "signed_out" });
-    const corePath = pathname.replace("/api/agents", "/v1/admin");
-    try {
-      const body = method === "GET" || method === "DELETE" ? "" : (await readBody(req));
-      const r = await fetch(`${CORE}${corePath}`, {
-        method,
-        headers: { ...signedHeaders(method, corePath, body), "x-admin-actor": `${principal}@${ORG}`, ...portalIdentityHeader(), "content-type": "application/json" },
-        body: body || undefined,
-      });
-      const data = await r.text();
-      res.writeHead(r.status, { "content-type": "application/json" }).end(data);
-    } catch (e) { json(res, 502, { error: "core_unreachable" }); }
-    return;
-  }
-  if (method === "GET" && pathname === "/api/agent-templates") {
-    try {
-      const r = await fetch(`${CORE}/v1/agent-templates`, { headers: signedHeaders("GET", "/v1/agent-templates", "") });
-      const data = await r.text();
-      res.writeHead(r.status, { "content-type": "application/json" }).end(data);
-    } catch (e) { json(res, 502, { error: "core_unreachable" }); }
-    return;
-  }
-
-  if (method === "GET" && pathname === "/agents") {
-    const agentHash = createHash("sha256").update(AGENT_PANEL_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "").digest("base64");
-    res.writeHead(200, {
-      "content-type": "text/html; charset=utf-8",
-      "content-security-policy": `default-src 'self'; script-src 'sha256-${agentHash}'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'`,
-    }).end(AGENT_PANEL_HTML);
-    return;
-  }
+  if (
+    pathname === "/agents" ||
+    pathname.startsWith("/agents/") ||
+    pathname === "/api/agent-templates" ||
+    pathname === "/api/agents" ||
+    pathname.startsWith("/api/agents/")
+  )
+    return json(res, 404, { error: "not_found" });
   if (pathname.startsWith("/api/scopes/")) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const rest = pathname.slice("/api/scopes/".length);
@@ -481,6 +458,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (method === "GET" && !pathname.startsWith("/api/") && !pathname.startsWith("/deployments/")) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
     return serveShell();
   }
 
@@ -490,9 +468,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 export function startServer(): void {
   server.listen(PORT, () => {
     console.log(`[admin-plugin] http://localhost:${PORT}  → core ${CORE} (org=${ORG})`);
-    console.warn(
-      "[admin-plugin] trusting the portal-synthesized admin cookie as identity — this app MUST stay private (no public http_service); reachable only through the private portal service.",
-    );
   });
 }
 

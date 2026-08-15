@@ -71,7 +71,7 @@ test(
         const r = up();
         assert.equal(r.code, 0, r.out);
         assert.match(r.out, /stack up/);
-        assert.match(r.out, new RegExp(`core   : http://localhost:${basePort}\\b`));
+        assert.match(r.out, new RegExp(`core   : http://127\\.0\\.0\\.1:${basePort}\\b`));
         assert.match(r.out, /plugin widget running/);
 
         const names = deploymentContainers(org);
@@ -94,7 +94,13 @@ test(
         assert.match(r.out, /qm status/);
         assert.match(r.out, new RegExp(`qm-${org}-core\\b`));
         assert.match(r.out, /Up\b/);
-        assert.match(r.out, new RegExp(`${basePort}->8080`));
+        assert.match(r.out, new RegExp(`127\\.0\\.0\\.1:${basePort}->8080`));
+        assert.match(r.out, /image content IDs:/);
+        assert.match(r.out, new RegExp(`qm-${org}-core: sha256:[a-f0-9]{64}`));
+        assert.match(r.out, new RegExp(`qm-${org}-pgdata: present`));
+        assert.match(r.out, new RegExp(`qm-${org}-coredata: present`));
+        assert.match(r.out, /recorded image evidence:/);
+        assert.match(r.out, /pg: release sha256:[a-f0-9]{64}; content sha256:[a-f0-9]{64}/);
       });
 
       await t.test("logs <service> tails one container; logs (all) interleaves with prefixes", () => {
@@ -148,6 +154,96 @@ test(
         assert.deepEqual(deploymentVolumes(org), []);
         assert.deepEqual(deploymentNetworks(org), []);
       });
+    } finally {
+      dockerCleanup(org);
+      removeStandInImages(SERVICES, org);
+      rmDir(dep);
+      rmDir(checkout);
+    }
+  },
+);
+
+test(
+  "D0-L source build records container image evidence and proves loopback-only published ports",
+  { skip: lifecycleSkip() },
+  async () => {
+    const org = `qm-e2e-d0l-${process.pid}`;
+    const basePort = 30000 + (process.pid % 5000);
+    const dep = tmp("d0l-dep");
+    const checkout = standInCheckout(SERVICES);
+    const secret = `d0l-${process.pid}-${"x".repeat(32)}`;
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: checkout });
+      execFileSync("git", ["config", "user.email", "d0l@example.test"], { cwd: checkout });
+      execFileSync("git", ["config", "user.name", "D0L fixture"], { cwd: checkout });
+      execFileSync("git", ["add", "deploy"], { cwd: checkout });
+      execFileSync("git", ["commit", "-qm", "D0L fixture"], { cwd: checkout });
+      const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
+
+      writeFileSync(
+        join(dep, ".env"),
+        [
+          `CAPABILITY_SECRET=${secret}-capability`,
+          `CONNECTOR_SECRET_KEY=${secret}-connector`,
+          `CORE_SIGNING_SECRET=${secret}-core`,
+          `PORTAL_IDENTITY_SECRET=${secret}-identity`,
+          `SKILL_SIGNING_SECRET=${secret}-skill`,
+          `PORTAL_SESSION_SECRET=${secret}-session`,
+          "ADMIN_GRANTS=d0l-admin:org_admin",
+          "",
+        ].join("\n"),
+      );
+      writeConfig(dep, {
+        orgId: org,
+        target: "docker",
+        basePort,
+        publicUrl: `http://127.0.0.1:${basePort + 1}`,
+        services: [...SERVICES],
+        sandbox: { backend: "disabled" },
+        env: {
+          core: {
+            HARNESS: "pi",
+            NODE_ENV: "production",
+            TEXT_ONLY_MODE: "true",
+            MEMORY_RECALL: "off",
+            MEMORY_CAPTURE: "off",
+          },
+          portal: { NODE_ENV: "development" },
+        },
+        secretEnv: { core: { ADMIN_GRANTS: "ADMIN_GRANTS" } },
+      });
+
+      const up = runCli(["up", "--build-from", checkout], {
+        cwd: dep,
+        withRepoEnv: false,
+        env: { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: "http://127.0.0.1:1" },
+      });
+      assert.equal(up.code, 0, up.out);
+      for (const [service, port] of [
+        ["core", basePort],
+        ["portal", basePort + 1],
+        ["web-ui", basePort + 2],
+        ["admin", basePort + 3],
+      ] as const) {
+        const name = suffix(deploymentContainers(org), service);
+        assert.ok(name, `expected ${service} container`);
+        const ports = JSON.parse(
+          execFileSync("docker", ["inspect", "--format", "{{json .NetworkSettings.Ports}}", name], {
+            encoding: "utf8",
+          }),
+        ) as Record<string, Array<{ HostIp: string; HostPort: string }>>;
+        assert.deepEqual(ports["8080/tcp"], [{ HostIp: "127.0.0.1", HostPort: String(port) }]);
+        const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+        assert.equal(health.status, 200);
+      }
+      const status = runCli(["status"], { cwd: dep, withRepoEnv: false });
+      assert.equal(status.code, 0, status.out);
+      assert.match(status.out, /recorded image evidence:/);
+      assert.match(status.out, new RegExp(`build ${commit}; content sha256:[a-f0-9]{64}`));
+      assert.match(status.out, /pg: release sha256:[a-f0-9]{64}; content sha256:[a-f0-9]{64}/);
+      assert.match(status.out, new RegExp(`qm-${org}-pgdata: present`));
+      assert.match(status.out, new RegExp(`qm-${org}-coredata: present`));
+      assert.doesNotMatch(status.out, /D0L_PROVIDER_API_KEY|CORE_SIGNING_SECRET|PORTAL_IDENTITY_SECRET/);
     } finally {
       dockerCleanup(org);
       removeStandInImages(SERVICES, org);

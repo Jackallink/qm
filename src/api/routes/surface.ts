@@ -16,6 +16,7 @@ import {
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { errMessage } from "../../util/errors.ts";
+import { textOnlyModelRefusal } from "../../core/text-only.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { pipeToResponse, sendJson } from "../http.ts";
@@ -997,6 +998,7 @@ export async function shareArtifact(ctx: ApiCtx): Promise<void> {
 async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+  await deps.refreshCustomProviders?.();
   const [webuiModels, baseModel, externalSlackParticipants, branding] = await Promise.all([
     deps.config.getWebuiModelsDurable(orgScope(deps)),
     deps.config.getBaseModelDurable(orgScope(deps)),
@@ -1068,10 +1070,16 @@ async function runtimeTarget(ctx: ApiCtx): Promise<{ actorId: string; scope: Sco
 }
 
 async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<string, unknown>> {
+  await ctx.deps.refreshCustomProviders?.();
   const config = ctx.deps.config!;
   const fallback = runtimeFallback(ctx);
   const org = orgScope(ctx.deps);
-  const approvedHarnesses = ((await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId]).filter(isHarnessId);
+  const configuredHarnesses = ((await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId]).filter(
+    isHarnessId,
+  );
+  const approvedHarnesses = ctx.deps.textOnly
+    ? configuredHarnesses.filter((harnessId) => harnessId === "pi")
+    : configuredHarnesses;
   const firstApproved = approvedHarnesses[0] ?? fallback.harnessId;
   const safeFallback =
     approvedHarnesses.includes(fallback.harnessId) && modelSupportedByHarness(fallback.modelId, fallback.harnessId)
@@ -1165,9 +1173,17 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   const modelCatalog = Object.fromEntries(
     [...advertisedModelIds].flatMap((id) => {
       const model = catalog.find((candidate) => candidate.id === id);
-      if (model) return [[id, { name: model.name, provider: model.provider }]];
       const resolved = resolveModel(id);
-      return resolved ? [[id, { name: resolved.name, provider: resolved.provider }]] : [];
+      return resolved
+        ? [[
+            id,
+            {
+              name: model?.name ?? resolved.name,
+              provider: model?.provider ?? String(resolved.provider),
+              api: resolved.api,
+            },
+          ]]
+        : [];
     }),
   );
   return {
@@ -1212,9 +1228,13 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 403, { error: "live_actor_required" });
   const target = await runtimeTarget(ctx);
   if (!target) return sendJson(ctx.res, 403, { error: "forbidden" });
+  await ctx.deps.refreshCustomProviders?.();
   const config = ctx.deps.config;
-  if (ctx.body.inherit === true) await config.setRuntimeSelectionLatest(target.scope, null);
-  else if (ctx.body.keep === true) {
+  if (ctx.body.inherit === true) {
+    if (ctx.deps.textOnly) return sendJson(ctx.res, 400, { error: "text_only_runtime_locked" });
+    await config.setRuntimeSelectionLatest(target.scope, null);
+  } else if (ctx.body.keep === true) {
+    if (ctx.deps.textOnly) return sendJson(ctx.res, 400, { error: "text_only_runtime_locked" });
     const runtime = await config.getRuntimeSelectionDurable(target.scope);
     if (runtime) await config.acknowledgeRuntimeSelectionLatest(target.scope);
     else {
@@ -1235,10 +1255,14 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     const modelId = ctx.body.modelId;
     const fallback = runtimeFallback(ctx);
     const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
+    if (ctx.deps.textOnly && harnessId !== "pi") return sendJson(ctx.res, 400, { error: "harness_not_approved" });
     if (!isHarnessId(harnessId) || !approved.includes(harnessId))
       return sendJson(ctx.res, 400, { error: "harness_not_approved" });
     if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
       return sendJson(ctx.res, 400, { error: "model_not_supported" });
+    if (ctx.deps.textOnly && textOnlyModelRefusal(await ctx.deps.customProviders?.runtimeSnapshot(), modelId)) {
+      return sendJson(ctx.res, 400, { error: "model_not_supported" });
+    }
     if (!(await webuiModelEnabled(ctx, modelId))) return sendJson(ctx.res, 400, { error: "model_not_enabled" });
     const effortLevel = ctx.body.effortLevel ?? "auto";
     if (typeof effortLevel !== "string" || !(THINKING_LEVELS as readonly string[]).includes(effortLevel))

@@ -800,6 +800,196 @@ test("no sandbox block → no injected env, lenient undefined app", () => {
   });
 });
 
+test("a Docker disabled sandbox profile is the sole sandbox-backend source", () => {
+  withConfig(
+    {
+      sandbox: { backend: "disabled" },
+      env: { core: { HARNESS: "pi", TEXT_ONLY_MODE: "true", MEMORY_RECALL: "off", MEMORY_CAPTURE: "off" } },
+    },
+    ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.deepEqual(config.sandbox, { backend: "disabled" });
+      assert.deepEqual(sandboxCoreEnv(config), { env: { SANDBOX_BACKEND: "disabled" }, missingSecrets: [] });
+    },
+  );
+
+  for (const extra of [
+    { target: "fly", region: "sjc", flyOrg: "acme" },
+    {
+      target: "aws",
+      aws: {
+        accountId: "123456789012",
+        region: "us-west-2",
+        cluster: "acme",
+        deployRoleArn: "arn:aws:iam::123456789012:role/deploy",
+        secretsPrefix: "acme/",
+        imageLabel: "release",
+        networking: { cloudMapNamespace: "acme.internal" },
+        services: { core: { ecrRepository: "core", ecsService: "acme-core", cpu: 512, memory: 1024 } },
+      },
+    },
+  ]) {
+    withConfig({ ...extra, sandbox: { backend: "disabled" } }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /"sandbox\.backend": "disabled" requires target "docker"/),
+    );
+  }
+
+  for (const sandbox of [
+    { backend: "disabled", app: "acme-sandboxes" },
+    { backend: "disabled", image: "registry.example.test/acme:1" },
+    { backend: "disabled", baseImage: "registry.example.test/acme@sha256:1234" },
+    { backend: "disabled", env: { TZ: "UTC" } },
+    { backend: "disabled", secretEnv: ["TOKEN"] },
+  ]) {
+    withConfig({ sandbox }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /"sandbox\.backend": "disabled" does not allow/),
+    );
+  }
+
+  for (const config of [
+    { env: { core: { SANDBOX_BACKEND: "disabled" } } },
+    { env: { core: { SANDBOX_SECONDARY_BACKEND: "local" } } },
+    { secretEnv: { core: { SANDBOX_BACKEND: "SANDBOX_BACKEND" } } },
+    { secretEnv: { core: { SANDBOX_SECONDARY_BACKEND: "SANDBOX_SECONDARY_BACKEND" } } },
+  ]) {
+    withConfig({ ...config, sandbox: { backend: "disabled" } }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /SANDBOX_(?:SECONDARY_)?BACKEND is managed by "sandbox\.backend"/),
+    );
+  }
+});
+
+test("the local Docker text-only profile keeps Core production and Portal health-only", () => {
+  const local = {
+    publicUrl: "http://127.0.0.1:8081",
+    services: ["core", "web-ui", "admin", "portal"],
+    sandbox: { backend: "disabled" },
+    env: {
+      core: {
+        HARNESS: "pi",
+        NODE_ENV: "production",
+        TEXT_ONLY_MODE: "true",
+        MEMORY_RECALL: "off",
+        MEMORY_CAPTURE: "off",
+      },
+      portal: { NODE_ENV: "development" },
+    },
+    secretEnv: { core: { ADMIN_GRANTS: "ADMIN_GRANTS" } },
+  };
+  withConfig(local, ({ path }) => assert.doesNotThrow(() => loadConfigAt(path)));
+  withConfig(
+    {
+      ...local,
+      securityScreen: {
+        backend: "proxy",
+        provider: "screen",
+        endpoint: "https://screen.example.test/classify",
+        rollout: "enforce",
+      },
+      secretEnv: { core: { ...local.secretEnv.core, SECURITY_SCREEN_PROXY_TOKEN: "SCREEN_TOKEN" } },
+    },
+    ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /local Docker text-only profile does not allow "securityScreen"/),
+  );
+  for (const publicUrl of ["http://localhost:8081", "http://[::1]:8081", "http://127.0.0.2:8081"]) {
+    withConfig({ ...local, publicUrl }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /requires publicUrl=http:\/\/127\.0\.0\.1:8081/),
+    );
+  }
+  withConfig({ ...local, env: { ...local.env, portal: { NODE_ENV: "production" } } }, ({ path }) =>
+    assert.throws(
+      () => loadConfigAt(path),
+      /local Docker text-only profile requires env\.portal\.NODE_ENV="development"/,
+    ),
+  );
+  for (const name of ["PORTAL_PLAYGROUND", "PORTAL_LOCAL_AUTH_BYPASS"]) {
+    withConfig({ ...local, env: { ...local.env, portal: { NODE_ENV: "development", [name]: "1" } } }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), new RegExp(`env\\.portal\\.${name} must be unset`)),
+    );
+  }
+  withConfig(
+    { ...local, env: { ...local.env, portal: { NODE_ENV: "development", OIDC_CLIENT_ID: "local-client" } } },
+    ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /local Docker text-only profile only permits env\.portal\.NODE_ENV/),
+  );
+  for (const secretEnv of [
+    { core: { ...local.secretEnv.core, EXTRA: "ANTHROPIC_API_KEY" } },
+    { "web-ui": { LEAK: "ANTHROPIC_API_KEY" }, core: local.secretEnv.core },
+    { portal: { OIDC_CLIENT_SECRET: "OIDC_CLIENT_SECRET" }, core: local.secretEnv.core },
+  ]) {
+    withConfig({ ...local, secretEnv }, ({ path }) =>
+      assert.throws(
+        () => loadConfigAt(path),
+        /local Docker text-only profile only permits secretEnv\.core\.ADMIN_GRANTS="ADMIN_GRANTS"/,
+      ),
+    );
+  }
+  for (const extra of [
+    { model: "claude-opus-5" },
+    { modelProvider: "anthropic" },
+    { skills: ["./skills/support"] },
+    { plugins: [{ name: "extra", image: "registry.example.test/extra:1" }] },
+    { postgresImage: "postgres:16" },
+    { imageOverrides: { core: "registry.example.test/qm-core:latest" } },
+    { env: { ...local.env, core: { ...local.env.core, MODEL_PROVIDER: "anthropic" } } },
+    { env: { ...local.env, core: { ...local.env.core, PI_MODEL: "claude-opus-5" } } },
+    { env: { ...local.env, core: { ...local.env.core, PI_TITLE_MODEL: "claude-opus-5" } } },
+    { secretEnv: { core: { ...local.secretEnv.core, PI_JUDGE_MODEL: "PI_JUDGE_MODEL" } } },
+  ]) {
+    withConfig({ ...local, ...extra }, ({ path }) =>
+      assert.throws(
+        () => loadConfigAt(path),
+        /selects its model only through host bootstrap|does not allow|only permits secretEnv\.core\.ADMIN_GRANTS|digest-pinned/,
+      ),
+    );
+  }
+  for (const service of ["core", "web-ui", "admin", "portal"] as const) {
+    for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "D0L_PROVIDER_API_KEY"]) {
+      const prior = (local.env as Record<string, Record<string, string>>)[service] ?? {};
+      withConfig(
+        { ...local, env: { ...local.env, [service]: { ...prior, [name]: "host-only-key" } } },
+        ({ path }) =>
+          assert.throws(
+            () => loadConfigAt(path),
+            new RegExp(`local Docker text-only profile does not allow env\\.${service}\\.${name}`),
+          ),
+      );
+    }
+  }
+  for (const [service, values] of [
+    ["web-ui", { NODE_ENV: "test", ALLOW_UNSIGNED_TEST_IDENTITY: "1" }],
+    ["web-ui", { CORE_API_URL: "http://not-core:8080" }],
+    ["admin", { NODE_ENV: "test", ALLOW_UNSIGNED_TEST_IDENTITY: "1" }],
+    ["admin", { CORE_API_URL: "http://not-core:8080" }],
+    ["core", { CORE_API_URL: "http://not-core:8080" }],
+    ["slack", { CORE_API_URL: "http://not-core:8080" }],
+  ] as const) {
+    const prior = (local.env as Record<string, Record<string, string>>)[service] ?? {};
+    withConfig(
+      { ...local, env: { ...local.env, [service]: { ...prior, ...values } } },
+      ({ path }) =>
+        assert.throws(
+          () => loadConfigAt(path),
+          /local Docker text-only profile only permits env\.core\.\{HARNESS, NODE_ENV, TEXT_ONLY_MODE, MEMORY_RECALL, MEMORY_CAPTURE\} and env\.portal\.NODE_ENV/,
+        ),
+    );
+  }
+  const priorBasePort = process.env.QM_BASE_PORT;
+  try {
+    process.env.QM_BASE_PORT = "9000";
+    withConfig(local, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /does not allow QM_BASE_PORT; set "basePort" instead/),
+    );
+  } finally {
+    if (priorBasePort === undefined) delete process.env.QM_BASE_PORT;
+    else process.env.QM_BASE_PORT = priorBasePort;
+  }
+  withConfig(
+    { ...local, basePort: 65_533, publicUrl: "http://127.0.0.1:65534" },
+    ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /local Docker text-only profile requires "basePort" at most 65532/),
+  );
+});
+
 test("sandbox shape errors: object, app non-empty string, env string-map, secretEnv valid names", () => {
   const cases: Array<{ sandbox: unknown; rx: RegExp }> = [
     { sandbox: "x", rx: /"sandbox" must be an object/ },

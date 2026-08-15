@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { resolve } from "node:path";
 import { baseModelProviders, boolEnv, loadConfig, numEnv, CONFIG_DEFAULTS } from "../src/config.ts";
 
@@ -295,6 +297,34 @@ test("plugin skill directories can be overridden or disabled", () => {
   ]);
   assert.deepEqual(loadConfig({ PLUGIN_SKILLS_DIRS: "0" }).pluginSkillDirs, []);
   assert.deepEqual(loadConfig({}).pluginSkillDirs, [resolve("plugins/onboarding/skills")]);
+});
+
+test("TEXT_ONLY_MODE does not discover or honor plugin skill directories", () => {
+  const textOnly = {
+    HARNESS: "pi",
+    SANDBOX_BACKEND: "disabled",
+    TEXT_ONLY_MODE: "true",
+    MEMORY_RECALL: "off",
+    MEMORY_CAPTURE: "off",
+  } as const;
+  const originalReaddirSync = fs.readdirSync;
+  let defaultDirectoryReads = 0;
+  fs.readdirSync = (...args) => {
+    defaultDirectoryReads += 1;
+    return Reflect.apply(originalReaddirSync, fs, args);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(loadConfig(textOnly).pluginSkillDirs, []);
+    assert.deepEqual(
+      loadConfig({ ...textOnly, PLUGIN_SKILLS_DIRS: "plugins/onboarding/skills, custom/skills" }).pluginSkillDirs,
+      [],
+    );
+    assert.equal(defaultDirectoryReads, 0);
+  } finally {
+    fs.readdirSync = originalReaddirSync;
+    syncBuiltinESMExports();
+  }
 });
 
 test("HARNESS=pi can boot before an admin configures a model provider", () => {

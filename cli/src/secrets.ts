@@ -1,5 +1,5 @@
 import { isVirtualService, type DeclaredServiceName } from "./services.ts";
-import type { ModelProvider, QmConfig } from "./config.ts";
+import { isLocalDockerTextOnlyProfile, type ModelProvider, type QmConfig } from "./config.ts";
 
 type SecretCondition =
   | { kind: "env-equals"; service: DeclaredServiceName; name: string; value: string }
@@ -12,6 +12,9 @@ type SecretCondition =
   | { kind: "all"; conditions: SecretCondition[] }
   | { kind: "any"; conditions: SecretCondition[] }
   | { kind: "target"; target: QmConfig["target"] }
+  | { kind: "sandbox-backend"; backend: NonNullable<QmConfig["sandbox"]>["backend"] }
+  | { kind: "local-docker-text-only" }
+  | { kind: "not"; condition: SecretCondition }
   | { kind: "model-provider"; provider: ModelProvider };
 
 export interface SecretSpec {
@@ -71,7 +74,24 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
   {
     name: "PUBLIC_API_URL",
     service: "core",
-    required: { when: { kind: "env-in", service: "core", name: "HARNESS", values: ["pi", "opencode", "codex"] } },
+    required: {
+      when: {
+        kind: "all",
+        conditions: [
+          { kind: "env-in", service: "core", name: "HARNESS", values: ["pi", "opencode", "codex"] },
+          {
+            kind: "not",
+            condition: {
+              kind: "all",
+              conditions: [
+                { kind: "env-equals", service: "core", name: "HARNESS", value: "pi" },
+                { kind: "sandbox-backend", backend: "disabled" },
+              ],
+            },
+          },
+        ],
+      },
+    },
     description: "Public core self-API URL reachable from agent sandboxes.",
   },
   {
@@ -211,6 +231,7 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
         conditions: [
           { kind: "service-absent", service: "auth" },
           { kind: "env-absent", service: "portal", name: "OIDC_CLIENT_ID" },
+          { kind: "not", condition: { kind: "local-docker-text-only" } },
         ],
       },
     },
@@ -219,7 +240,15 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
   {
     name: "OIDC_CLIENT_SECRET",
     service: "portal",
-    required: { when: { kind: "service-absent", service: "auth" } },
+    required: {
+      when: {
+        kind: "all",
+        conditions: [
+          { kind: "service-absent", service: "auth" },
+          { kind: "not", condition: { kind: "local-docker-text-only" } },
+        ],
+      },
+    },
     description:
       "Client secret issued by an external identity provider; the built-in auth broker mints its own instead.",
   },
@@ -231,6 +260,7 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
         kind: "all",
         conditions: [
           { kind: "service-absent", service: "auth" },
+          { kind: "not", condition: { kind: "local-docker-text-only" } },
           {
             kind: "env-all-absent",
             service: "portal",
@@ -372,6 +402,9 @@ function conditionMatches(config: QmConfig, condition: SecretCondition): boolean
   if (condition.kind === "all") return condition.conditions.every((nested) => conditionMatches(config, nested));
   if (condition.kind === "any") return condition.conditions.some((nested) => conditionMatches(config, nested));
   if (condition.kind === "target") return config.target === condition.target;
+  if (condition.kind === "sandbox-backend") return config.sandbox?.backend === condition.backend;
+  if (condition.kind === "local-docker-text-only") return isLocalDockerTextOnlyProfile(config);
+  if (condition.kind === "not") return !conditionMatches(config, condition.condition);
   if (condition.kind === "model-provider") return config.modelProvider === condition.provider;
   if (condition.kind === "env-all-absent") {
     return condition.names.every((name) => !config.env[condition.service]?.[name]?.trim());
@@ -567,6 +600,9 @@ function conditionClause(condition: SecretCondition): string {
   if (condition.kind === "env-present") return `env.${condition.service}.${condition.name} is set`;
   if (condition.kind === "env-in")
     return `env.${condition.service}.${condition.name} is one of ${condition.values.map((value) => JSON.stringify(value)).join(", ")}`;
+  if (condition.kind === "sandbox-backend") return `sandbox.backend is ${JSON.stringify(condition.backend)}`;
+  if (condition.kind === "local-docker-text-only") return "the local Docker text-only profile is configured";
+  if (condition.kind === "not") return `not (${conditionClause(condition.condition)})`;
   if (condition.kind === "model-provider") return `modelProvider is ${JSON.stringify(condition.provider)}`;
   return `env.${condition.service}.${condition.name} is ${JSON.stringify(condition.value)}`;
 }
@@ -610,6 +646,11 @@ export function renderEnvExample(config: QmConfig): string {
     lines.push(`# Needed when ${clauses.join(" and ")}${spec.required === false ? " (optional even then)" : ""}.`);
     if (spec.generate) lines.push(`# Generate with: ${generate(spec.generate)}`);
     lines.push(spec.managedBy === "terraform" ? `# ${spec.name}=  # populated by Terraform` : `# ${spec.name}=`);
+    lines.push("");
+  }
+  if (isLocalDockerTextOnlyProfile(config)) {
+    lines.push("# Host-only custom provider key for `qm local bootstrap`; it is never injected into a container.");
+    lines.push("D0L_PROVIDER_API_KEY=");
     lines.push("");
   }
   return `${lines.join("\n").trimEnd()}\n`;

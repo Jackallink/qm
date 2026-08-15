@@ -45,7 +45,7 @@ function raw(
 }
 
 test("GET / serves gzip + etag when gzip is accepted", async () => {
-  const r = await raw("/", { "accept-encoding": "gzip" });
+  const r = await raw("/", { "accept-encoding": "gzip", cookie: "admin=U-admin" });
   assert.equal(r.status, 200);
   assert.equal(r.headers["content-encoding"], "gzip");
   assert.ok(r.headers["etag"], "etag present");
@@ -55,16 +55,16 @@ test("GET / serves gzip + etag when gzip is accepted", async () => {
 });
 
 test("GET / without gzip serves identity HTML with the same etag", async () => {
-  const r = await raw("/");
+  const r = await raw("/", { cookie: "admin=U-admin" });
   assert.equal(r.status, 200);
   assert.equal(r.headers["content-encoding"], undefined);
   assert.match(r.body.toString("utf8"), /<!doctype html>|<html/i);
 });
 
 test("GET / with matching if-none-match → 304", async () => {
-  const first = await raw("/", { "accept-encoding": "gzip" });
+  const first = await raw("/", { "accept-encoding": "gzip", cookie: "admin=U-admin" });
   const etag = first.headers["etag"] as string;
-  const r = await raw("/", { "if-none-match": etag });
+  const r = await raw("/", { "if-none-match": etag, cookie: "admin=U-admin" });
   assert.equal(r.status, 304);
   assert.equal(r.body.length, 0);
 });

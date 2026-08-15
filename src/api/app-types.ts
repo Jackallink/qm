@@ -455,6 +455,7 @@ export interface App {
 
 export interface AppDeps {
   identity: IdentityService;
+  textOnly?: boolean;
   publicWebUrl?: string;
   sessions: SessionStore;
   orchestrator: Orchestrator;
@@ -471,10 +472,6 @@ export interface AppDeps {
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
-  agentRegistry?: import("../agent/agent-registry.ts").AgentRegistryStore;
-  sopStore?: import("../agent/sop-store.ts").SopRunStore;
-  messengerStore?: import("../agent/messenger-store.ts").MessengerStore;
-  schedulerStore?: import("../agent/scheduler-store.ts").SchedulerStore;
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;

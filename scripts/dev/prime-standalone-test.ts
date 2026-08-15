@@ -4,7 +4,7 @@
  *   node --experimental-strip-types scripts/dev/prime-standalone-test.ts
  */
 import { createPrimeHarness } from "../../src/harness/prime-harness.ts";
-import type { HarnessTurnInput, HarnessTurnResult } from "../../src/harness/harness.ts";
+import type { HarnessTurnInput } from "../../src/harness/harness.ts";
 
 const PRIME_BIN = "/Users/jakeliu/Workspace/prime-agent/packages/coding-agent/dist/cli.js";
 

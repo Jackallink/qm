@@ -96,6 +96,50 @@ test("runtime options preserve a fetched OpenRouter model as the selected web tu
   assert.equal(defaultModelValue(), "pi:anthropic/claude-sonnet-4.5");
 });
 
+test("runtime options preserve a generic custom-provider model as the selected web turn model", () => {
+  applyRuntimeOptions(
+    null,
+    ["pi"],
+    { pi: ["deepseek-v4-flash"] },
+    { harnessId: "pi", modelId: "deepseek-v4-flash" },
+    { "deepseek-v4-flash": { name: "DeepSeek V4 Flash", provider: "deepseek", api: "openai-completions" } },
+  );
+  const option = getModelOptions()[0]!;
+  assert.equal(option.value, "pi:deepseek-v4-flash");
+  assert.equal(option.label, "DeepSeek V4 Flash");
+  assert.equal(option.model.id, "deepseek-v4-flash");
+  assert.equal(option.model.name, "DeepSeek V4 Flash");
+  assert.equal(option.model.provider, "deepseek");
+  assert.equal(option.model.api, "openai-completions");
+  assert.equal(defaultModelValue(), "pi:deepseek-v4-flash");
+});
+
+test("runtime options preserve an Anthropic-compatible custom provider's message API", () => {
+  applyRuntimeOptions(
+    null,
+    ["pi"],
+    { pi: ["internal-claude"] },
+    { harnessId: "pi", modelId: "internal-claude" },
+    { "internal-claude": { name: "Internal Claude", provider: "internal", api: "anthropic-messages" } },
+  );
+  const option = getModelOptions()[0]!;
+  assert.equal(option.value, "pi:internal-claude");
+  assert.equal(option.model.provider, "internal");
+  assert.equal(option.model.api, "anthropic-messages");
+});
+
+test("runtime options ignore a custom provider without protocol metadata", () => {
+  applyRuntimeOptions(
+    null,
+    ["pi"],
+    { pi: ["untyped-custom"] },
+    { harnessId: "pi", modelId: "untyped-custom" },
+    { "untyped-custom": { name: "Untyped Custom", provider: "untyped" } },
+  );
+  assert.notEqual(defaultModelValue(), "pi:untyped-custom");
+  assert.equal(getModelOptions().some((option) => option.model.id === "untyped-custom"), false);
+});
+
 test("runtime options hide retired persisted model ids", () => {
   applyRuntimeOptions(
     null,

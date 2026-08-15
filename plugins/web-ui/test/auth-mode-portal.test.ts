@@ -10,9 +10,11 @@ const core = createServer((_req, res) => {
 });
 await new Promise<void>((r) => core.listen(0, r));
 
-const SECRET = "auth-mode-portal-test-secret";
+const CORE_SECRET = "auth-mode-portal-core-secret";
+const PORTAL_SECRET = "auth-mode-portal-identity-secret";
 process.env.CORE_API_URL = `http://localhost:${(core.address() as AddressInfo).port}`;
-process.env.CORE_SIGNING_SECRET = SECRET;
+process.env.CORE_SIGNING_SECRET = CORE_SECRET;
+process.env.PORTAL_IDENTITY_SECRET = PORTAL_SECRET;
 process.env.WEB_UI_PRINCIPALS = "alice";
 process.env.ALLOW_UNSIGNED_TEST_IDENTITY = "0";
 
@@ -49,7 +51,7 @@ test("a webuiuser cookie confers nothing in portal mode", async () => {
 });
 
 test("a verified principal outside WEB_UI_PRINCIPALS is not_allowed, not unauthenticated", async () => {
-  const token = mintPortalIdentity({ p: "mallory", exp: Date.now() + 60_000 }, SECRET);
+  const token = mintPortalIdentity({ p: "mallory", exp: Date.now() + 60_000 }, PORTAL_SECRET);
   const r = await fetch(`${base}/me`, { headers: { [PORTAL_IDENTITY_HEADER]: token } });
   assert.equal(r.status, 401);
   const body = await r.json();
@@ -58,7 +60,7 @@ test("a verified principal outside WEB_UI_PRINCIPALS is not_allowed, not unauthe
 });
 
 test("a verified allowed principal gets through and /me reports the mode", async () => {
-  const token = mintPortalIdentity({ p: "alice", exp: Date.now() + 60_000 }, SECRET);
+  const token = mintPortalIdentity({ p: "alice", exp: Date.now() + 60_000 }, PORTAL_SECRET);
   const r = await fetch(`${base}/me`, { headers: { [PORTAL_IDENTITY_HEADER]: token } });
   assert.equal(r.status, 200);
   const body = await r.json();

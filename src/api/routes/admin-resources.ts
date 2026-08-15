@@ -15,6 +15,7 @@ import {
   ALL_PROVIDERS_AVAILABLE,
 } from "../../model/pi-models.ts";
 import { resolveRuntimeChoiceDurable } from "../../harness/harness-router.ts";
+import { textOnlyModelRefusal } from "../../core/text-only.ts";
 import { type OrgBranding } from "../../resolution/config-store.ts";
 import {
   isValidCredentialSlug,
@@ -356,6 +357,14 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (raw !== undefined && raw !== null && typeof raw !== "string")
         return { error: "base-model requires { modelId: string } (empty string clears the override)" };
       const modelId = typeof raw === "string" ? raw.trim() : "";
+      if (ctx.deps.textOnly) {
+        if (!modelId) return { error: "text-only mode requires an explicit Pi model" };
+        if (!modelSupportedByHarness(modelId, "pi")) return { error: `model ${modelId} is not supported by pi` };
+        const refusal = textOnlyModelRefusal(await ctx.deps.customProviders?.runtimeSnapshot(), modelId);
+        if (refusal) return { error: refusal };
+        await ctx.deps.config!.setRuntimeSelectionLatest(scope, { harnessId: "pi", modelId });
+        return { ok: true };
+      }
       if (modelId && !resolveModel(modelId)) return { error: `unknown model id: ${modelId}` };
       const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
       const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
@@ -397,16 +406,22 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     get: (deps, scope) => deps.config!.getRuntimeSelection(scope),
     apply: async (ctx, _actor, scope) => {
       if ((ctx.body as { inherit?: unknown }).inherit === true) {
+        if (ctx.deps.textOnly) return { error: "text-only mode requires an explicit Pi runtime" };
         await ctx.deps.config!.setRuntimeSelectionLatest(scope, null);
         return { ok: true };
       }
       const harnessId = (ctx.body as { harnessId?: unknown }).harnessId;
       const modelId = (ctx.body as { modelId?: unknown }).modelId;
       if (!isHarnessId(harnessId)) return { error: `runtime requires harnessId (${HARNESS_IDS.join(" | ")})` };
+      if (ctx.deps.textOnly && harnessId !== "pi") return { error: "text-only mode only permits the pi harness" };
       const approved = (await ctx.deps.config!.getApprovedHarnessesDurable()) ?? [ctx.deps.harnessId ?? "pi"];
       if (!approved.includes(harnessId)) return { error: `harness ${harnessId} is not approved` };
       if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
         return { error: `model ${String(modelId)} is not supported by ${harnessId}` };
+      if (ctx.deps.textOnly) {
+        const refusal = textOnlyModelRefusal(await ctx.deps.customProviders?.runtimeSnapshot(), modelId);
+        if (refusal) return { error: refusal };
+      }
       const runtimeKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
       if (!modelServiceable(modelId, modelProviderAvailabilityFor(harnessId, runtimeKeys)))
         return {
@@ -425,7 +440,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     enumValues: HARNESS_IDS,
     get: (deps) => deps.config!.getApprovedHarnesses(),
     apply: generic(
-      (body, { scope }) => {
+      (body, { scope, deps }) => {
         const bad = orgOnly(scope, "approved harnesses are org-wide");
         if (bad) return bad;
         const raw = (body as { ids?: unknown }).ids;
@@ -433,6 +448,9 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         if (raw.some((id) => !isHarnessId(id)))
           return { error: `unknown harness (expected ${HARNESS_IDS.join(" | ")})` };
         const ids = [...new Set(raw.filter(isHarnessId))];
+        if (deps.textOnly && (ids.length !== 1 || ids[0] !== "pi")) {
+          return { error: "text-only mode requires approved harnesses to be [pi]" };
+        }
         return { value: ids.length ? ids : null };
       },
       (deps, _scope, ids) => deps.config!.setApprovedHarnesses(ids),

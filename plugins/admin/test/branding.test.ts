@@ -39,7 +39,7 @@ test.after(() => {
 });
 
 test("cold start: the FIRST shell render already carries the org branding", async () => {
-  const html = await (await fetch(`${base}/`)).text();
+  const html = await (await fetch(`${base}/`, { headers: { cookie: "admin=U-admin" } })).text();
   assert.match(html, /--brand-accent:#f0652f/, "accent style injected on the first render");
   assert.match(
     html,
@@ -62,7 +62,7 @@ test("a branding save acks only after the shell reflects it — the post-save re
     body: JSON.stringify({ accent: "#0055ff", mark: "Z", selfLabel: "Zed" }),
   });
   assert.equal(put.status, 200);
-  const html = await (await fetch(`${base}/`)).text();
+  const html = await (await fetch(`${base}/`, { headers: { cookie: "admin=U-admin" } })).text();
   assert.match(html, /--brand-accent:#0055ff/);
   assert.match(html, /<meta name="brand-self-label" content="Zed"\s*\/?>/);
 });

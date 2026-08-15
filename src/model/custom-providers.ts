@@ -13,7 +13,11 @@
  * resolved per-call by wiring alongside the built-in provider keys.
  */
 
+import { getBuiltinModel, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
+import { MODEL_REGISTRY } from "./model-registry.ts";
+
+const nativeModel = getBuiltinModel as unknown as (provider: string, id: string) => unknown;
 
 export const CUSTOM_PROVIDER_PROTOCOLS = ["openai", "anthropic"] as const;
 export type CustomProviderProtocol = (typeof CUSTOM_PROVIDER_PROTOCOLS)[number];
@@ -39,13 +43,32 @@ export interface CustomProviderSpec {
 }
 
 const SLUG_RE = /^[a-z][a-z0-9-]{1,31}$/;
-const RESERVED = new Set<string>([...PROVIDER_IDS, "mock"]);
+const RESERVED = new Set<string>([...PROVIDER_IDS, ...getBuiltinProviders(), "mock", "radius"]);
 
-export function validateCustomProviderSpec(spec: CustomProviderSpec): void {
+function conflictsWithNativeModel(id: string): boolean {
+  return MODEL_REGISTRY.some((model) => model.id === id) || PROVIDER_IDS.some((provider) => Boolean(nativeModel(provider, id)));
+}
+
+export function isReservedCustomProviderId(id: string): boolean {
+  return RESERVED.has(id);
+}
+
+function isCoreManagedProviderId(id: string): boolean {
+  return PROVIDER_IDS.some((provider) => provider === id);
+}
+
+export function isGrandfatheredCustomProviderId(id: string): boolean {
+  return RESERVED.has(id) && !isCoreManagedProviderId(id) && id !== "mock" && id !== "radius";
+}
+
+export function validateCustomProviderSpec(
+  spec: CustomProviderSpec,
+  opts: { allowReservedProviderId?: boolean } = {},
+): void {
   if (!SLUG_RE.test(spec.id)) {
     throw new Error(`provider id must match ${SLUG_RE} (lowercase slug), got "${spec.id}"`);
   }
-  if (RESERVED.has(spec.id)) throw new Error(`provider id "${spec.id}" is reserved`);
+  if (!opts.allowReservedProviderId && RESERVED.has(spec.id)) throw new Error(`provider id "${spec.id}" is reserved`);
   if (!spec.name.trim()) throw new Error("provider name is required");
   if (spec.name.length > 100) throw new Error("provider name must be 100 chars or fewer");
   if (!CUSTOM_PROVIDER_PROTOCOLS.includes(spec.protocol)) {
@@ -59,6 +82,7 @@ export function validateCustomProviderSpec(spec: CustomProviderSpec): void {
   const seen = new Set<string>();
   for (const m of spec.models) {
     if (!m.id?.trim() || m.id.length > 200) throw new Error("every model needs an id (<=200 chars)");
+    if (conflictsWithNativeModel(m.id)) throw new Error(`model "${m.id}" conflicts with a built-in model`);
     if (m.name !== undefined && (typeof m.name !== "string" || m.name.length > 200))
       throw new Error(`model "${m.id}": name must be a string of 200 chars or fewer`);
     if (seen.has(m.id)) throw new Error(`duplicate model id "${m.id}"`);
@@ -76,11 +100,6 @@ export function validateCustomProviderSpec(spec: CustomProviderSpec): void {
   }
 }
 
-/**
- * The wire-level shape pi-ai expects. We construct these without
- * importing pi-ai so this module stays dependency-free; pi-models casts
- * at its boundary, the same way it treats getBuiltinModel.
- */
 export interface CustomRuntimeModel {
   id: string;
   name: string;
@@ -88,6 +107,8 @@ export interface CustomRuntimeModel {
   api: "openai-completions" | "anthropic-messages";
   baseUrl: string;
   reasoning: boolean;
+  compat?: Record<string, unknown>;
+  thinkingLevelMap?: Record<string, string | null>;
   input: ("text" | "image")[];
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
@@ -97,14 +118,32 @@ export interface CustomRuntimeModel {
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 8_192;
 
+function deepSeekSemantics(modelId: string): Pick<CustomRuntimeModel, "reasoning" | "compat" | "thinkingLevelMap"> {
+  const native = nativeModel("deepseek", modelId) as
+    | {
+        api?: unknown;
+        reasoning?: unknown;
+        compat?: Record<string, unknown>;
+        thinkingLevelMap?: Record<string, string | null>;
+      }
+    | undefined;
+  if (!native || native.api !== "openai-completions") return { reasoning: false };
+  return {
+    reasoning: native.reasoning === true,
+    ...(native.compat ? { compat: { ...native.compat } } : {}),
+    ...(native.thinkingLevelMap ? { thinkingLevelMap: { ...native.thinkingLevelMap } } : {}),
+  };
+}
+
 function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): CustomRuntimeModel {
+  const semantics = provider.protocol === "openai" ? deepSeekSemantics(m.id) : { reasoning: false };
   return {
     id: m.id,
     name: m.name?.trim() || m.id,
     provider: provider.id,
     api: provider.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
     baseUrl: provider.baseUrl,
-    reasoning: false,
+    ...semantics,
     input: ["text"],
     cost: { input: m.input ?? 0, output: m.output ?? 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -112,9 +151,83 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
   };
 }
 
+function toModelsJsonModel(provider: CustomProviderSpec, model: CustomModelSpec): Record<string, unknown> {
+  const runtimeModel = toRuntimeModel(provider, model);
+  return {
+    id: runtimeModel.id,
+    name: runtimeModel.name,
+    contextWindow: runtimeModel.contextWindow,
+    maxTokens: runtimeModel.maxTokens,
+    reasoning: runtimeModel.reasoning,
+    ...(runtimeModel.compat ? { compat: runtimeModel.compat } : {}),
+    ...(runtimeModel.thinkingLevelMap ? { thinkingLevelMap: runtimeModel.thinkingLevelMap } : {}),
+    cost: runtimeModel.cost,
+  };
+}
+
+function cloneProviderSpec(spec: CustomProviderSpec): CustomProviderSpec {
+  return { ...spec, models: spec.models.map((model) => ({ ...model })) };
+}
+
 let registry = new Map<string, CustomRuntimeModel>();
 let providers: CustomProviderSpec[] = [];
 let version = 0;
+
+function providerSnapshot(specs: readonly CustomProviderSpec[]): string {
+  return JSON.stringify(
+    specs.map((spec) => ({
+      id: spec.id,
+      name: spec.name,
+      protocol: spec.protocol,
+      baseUrl: spec.baseUrl,
+      models: spec.models.map((model) => ({
+        id: model.id,
+        ...(model.name !== undefined ? { name: model.name } : {}),
+        ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+        ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+        ...(model.input !== undefined ? { input: model.input } : {}),
+        ...(model.output !== undefined ? { output: model.output } : {}),
+      })),
+    })),
+  );
+}
+
+export function runtimeCustomProviderSpecs(specs: readonly CustomProviderSpec[]): CustomProviderSpec[] {
+  const runtimeSpecs = specs.filter((spec) => !isCoreManagedProviderId(spec.id));
+  const ids = new Map<string, number>();
+  for (const spec of runtimeSpecs) {
+    for (const model of spec.models) {
+      if (!conflictsWithNativeModel(model.id)) ids.set(model.id, (ids.get(model.id) ?? 0) + 1);
+    }
+  }
+  return runtimeSpecs.flatMap((spec) => {
+    const models = spec.models.filter((model) => !conflictsWithNativeModel(model.id) && ids.get(model.id) === 1);
+    return models.length ? [{ ...spec, models }] : [];
+  });
+}
+
+export function customProviderSpecs(): CustomProviderSpec[] {
+  return providers.map(cloneProviderSpec);
+}
+
+export function resolveCustomModelFromProviders(
+  specs: readonly CustomProviderSpec[],
+  id: string,
+): CustomRuntimeModel | undefined {
+  for (const spec of specs) {
+    const model = spec.models.find((candidate) => candidate.id === id);
+    if (model) return toRuntimeModel(spec, model);
+  }
+  return undefined;
+}
+
+export function hasCustomProviderModelKey(
+  specs: readonly CustomProviderSpec[],
+  keys: Readonly<Record<string, string | undefined>>,
+  modelId: string,
+): boolean {
+  return specs.some((provider) => provider.models.some((model) => model.id === modelId) && Boolean(keys[provider.id]));
+}
 
 /**
  * Called by wiring at boot and again after every admin write, with the
@@ -123,14 +236,16 @@ let version = 0;
  * built-in.
  */
 export function setCustomProviders(specs: CustomProviderSpec[]): void {
+  const runtimeSpecs = runtimeCustomProviderSpecs(specs);
+  if (providerSnapshot(runtimeSpecs) === providerSnapshot(providers)) return;
   const next = new Map<string, CustomRuntimeModel>();
-  for (const spec of specs) {
+  for (const spec of runtimeSpecs) {
     for (const m of spec.models) {
       next.set(m.id, toRuntimeModel(spec, m));
     }
   }
   registry = next;
-  providers = specs.map((s) => ({ ...s, models: [...s.models] }));
+  providers = runtimeSpecs.map(cloneProviderSpec);
   version += 1;
 }
 
@@ -158,23 +273,17 @@ export function customModelCatalog(): Array<{ id: string; name: string; provider
  * a runtime API key alone is not enough (availability checks only cover
  * providers the ModelsStore knows).
  */
-export function customModelsJson(): { providers: Record<string, unknown> } | undefined {
-  if (providers.length === 0) return undefined;
+export function customModelsJson(specs: readonly CustomProviderSpec[] = providers): { providers: Record<string, unknown> } | undefined {
+  if (specs.length === 0) return undefined;
   return {
     providers: Object.fromEntries(
-      providers.map((spec) => [
+      specs.map((spec) => [
         spec.id,
         {
           name: spec.name,
           baseUrl: spec.baseUrl,
           api: spec.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
-          models: spec.models.map((m) => ({
-            id: m.id,
-            name: m.name ?? m.id,
-            contextWindow: m.contextWindow ?? 128_000,
-            maxTokens: m.maxTokens ?? 8_192,
-            cost: { input: m.input ?? 0, output: m.output ?? 0, cacheRead: 0, cacheWrite: 0 },
-          })),
+          models: spec.models.map((model) => toModelsJsonModel(spec, model)),
         },
       ]),
     ),

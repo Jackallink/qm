@@ -1,8 +1,10 @@
 import {
   CUSTOM_PROVIDER_PROTOCOLS,
+  validateCustomProviderSpec,
   type CustomProviderSpec,
   type CustomProviderProtocol,
 } from "../../../model/custom-providers.ts";
+import { textOnlyCustomProviderEndpointRefusal } from "../../../core/text-only.ts";
 import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
@@ -32,6 +34,7 @@ async function validateKey(
     const response = await (ctx.deps.modelCredentialFetch ?? fetch)(url, {
       headers,
       signal: AbortSignal.timeout(5_000),
+      redirect: "manual",
     });
     return response.ok;
   } catch {
@@ -82,6 +85,15 @@ export async function putCustomProvider(ctx: ApiCtx): Promise<void> {
     baseUrl: body.baseUrl.trim().replace(/\/+$/, ""),
     models: Array.isArray(body.models) ? (body.models as CustomProviderSpec["models"]) : [],
   };
+  try {
+    validateCustomProviderSpec(spec, {
+      allowReservedProviderId: await ctx.deps.customProviders.canUpdateGrandfatheredProvider(id),
+    });
+  } catch (e) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: (e as Error).message });
+  }
+  const endpointRefusal = ctx.deps.textOnly ? textOnlyCustomProviderEndpointRefusal(spec.baseUrl) : undefined;
+  if (endpointRefusal) return sendJson(ctx.res, 400, { error: "bad_request", message: endpointRefusal });
   const apiKey = typeof body.apiKey === "string" && body.apiKey.trim() ? body.apiKey.trim() : undefined;
   const shouldValidate = body.validate !== false && apiKey !== undefined;
   if (shouldValidate && !(await validateKey(ctx, spec.protocol, spec.baseUrl, apiKey!))) {

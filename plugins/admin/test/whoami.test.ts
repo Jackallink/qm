@@ -39,7 +39,7 @@ test.after(() => {
 const api = (path: string, cookie?: string) => fetch(`${base}${path}`, cookie ? { headers: { cookie } } : {});
 
 test("admin HTML ships a hash-only script policy and transport/browser isolation headers", async () => {
-  const r = await api("/");
+  const r = await api("/", "admin=U-admin");
   assert.equal(r.status, 200);
   const csp = r.headers.get("content-security-policy") ?? "";
   assert.match(csp, /script-src 'sha256-/);

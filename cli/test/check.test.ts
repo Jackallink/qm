@@ -178,6 +178,59 @@ test("a bare deployment (no sandbox/, no plugins) passes", () => {
   }
 });
 
+test("a disabled Docker profile passes without a Fly sandbox app", () => {
+  const d = deployment(() => {}, {
+    sandbox: { backend: "disabled" },
+    env: { core: { HARNESS: "pi", TEXT_ONLY_MODE: "true", MEMORY_RECALL: "off", MEMORY_CAPTURE: "off" } },
+  });
+  try {
+    assert.doesNotThrow(() => check(d));
+  } finally {
+    rmSync(d.dir, { recursive: true, force: true });
+  }
+});
+
+test("the D0-L profile rejects a sandbox layer", () => {
+  const d = deployment((dir) => {
+    writeTool(dir, "example-tool", { id: "example-tool", install: { binary: "example-tool" } });
+  }, {
+    publicUrl: "http://127.0.0.1:8081",
+    services: ["core", "web-ui", "admin", "portal"],
+    sandbox: { backend: "disabled" },
+    env: {
+      core: { HARNESS: "pi", NODE_ENV: "production", TEXT_ONLY_MODE: "true", MEMORY_RECALL: "off", MEMORY_CAPTURE: "off" },
+      portal: { NODE_ENV: "development" },
+    },
+    secretEnv: { core: { ADMIN_GRANTS: "ADMIN_GRANTS" } },
+  });
+  try {
+    assert.throws(() => check(d), /disabled sandbox does not allow a sandbox layer/);
+  } finally {
+    rmSync(d.dir, { recursive: true, force: true });
+  }
+});
+
+test("the D0-L profile rejects discovered plugins", () => {
+  const d = deployment((dir) => {
+    mkdirSync(join(dir, "plugins", "extra"), { recursive: true });
+    writeFileSync(join(dir, "plugins", "extra", "Dockerfile"), "FROM scratch\n");
+  }, {
+    publicUrl: "http://127.0.0.1:8081",
+    services: ["core", "web-ui", "admin", "portal"],
+    sandbox: { backend: "disabled" },
+    env: {
+      core: { HARNESS: "pi", NODE_ENV: "production", TEXT_ONLY_MODE: "true", MEMORY_RECALL: "off", MEMORY_CAPTURE: "off" },
+      portal: { NODE_ENV: "development" },
+    },
+    secretEnv: { core: { ADMIN_GRANTS: "ADMIN_GRANTS" } },
+  });
+  try {
+    assert.throws(() => check(d), /disabled sandbox does not allow plugins/);
+  } finally {
+    rmSync(d.dir, { recursive: true, force: true });
+  }
+});
+
 test("AWS requires exact ECS/ECR coordinates for discovered plugins", () => {
   const plugin = { name: "linear", image: "ghcr.io/acme/linear:1" };
   const aws = {

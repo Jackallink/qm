@@ -34,13 +34,6 @@ import {
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
-import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, getTemplates,
-  agentHealth, agentHealthHeartbeat, allHealth } from "./admin/agents.ts";
-import { listRuns, getRun, createRun, signGate, rollbackGate, getHistory } from "./admin/sop-runs.ts";
-import { sendMessage, getInbox, ackMessage, subscribeEvents, heartbeat } from "./admin/messenger.ts";
-import { disableSkill, revokeTokens, circuitBreak, killSession } from "./admin/emergency.ts";
-import { dashboardSummary, tokenTrends, agentActivity } from "./admin/dashboard.ts";
-import { listJobs, scheduleJob, pauseJob, resumeJob, checkLoop } from "./admin/scheduler.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -69,42 +62,6 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/custom-providers", auth: "either", handle: getCustomProviders },
   { method: "PUT", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: putCustomProvider },
   { method: "DELETE", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: deleteCustomProvider },
-  // Agent registry
-  { method: "GET", path: "/v1/agent-templates", auth: "either", handle: getTemplates },
-  { method: "GET", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: listAgents },
-  { method: "GET", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: getAgent },
-  { method: "POST", path: "/v1/admin/workspaces/:ws/agents", auth: "either", handle: createAgent },
-  { method: "PUT", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: updateAgent },
-  { method: "DELETE", path: "/v1/admin/workspaces/:ws/agents/:id", auth: "either", handle: deleteAgent },
-  { method: "GET", path: "/v1/admin/agents/health", auth: "either", handle: allHealth },
-  { method: "GET", path: "/v1/admin/agents/:agentId/health", auth: "either", handle: agentHealth },
-  // Emergency
-  { method: "POST", path: "/v1/admin/emergency/skills/:skillId/disable", auth: "either", handle: disableSkill },
-  { method: "POST", path: "/v1/admin/emergency/agents/:agentId/revoke-tokens", auth: "either", handle: revokeTokens },
-  { method: "POST", path: "/v1/admin/emergency/circuit-break", auth: "either", handle: circuitBreak },
-  { method: "POST", path: "/v1/admin/emergency/sessions/:sessionId/kill", auth: "either", handle: killSession },
-  // Dashboard
-  { method: "GET", path: "/v1/admin/dashboard/summary", auth: "either", handle: dashboardSummary },
-  { method: "GET", path: "/v1/admin/dashboard/token-trends", auth: "either", handle: tokenTrends },
-  { method: "GET", path: "/v1/admin/dashboard/agent-activity", auth: "either", handle: agentActivity },
-  { method: "GET", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: listRuns },
-  { method: "GET", path: "/v1/sop-runs/:id", auth: "either", handle: getRun },
-  { method: "POST", path: "/v1/admin/workspaces/:ws/sop-runs", auth: "either", handle: createRun },
-  { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/sign", auth: "either", handle: signGate },
-  { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/rollback", auth: "either", handle: rollbackGate },
-  { method: "GET", path: "/v1/sop-runs/:id/history", auth: "either", handle: getHistory },
-  // Messenger
-  { method: "POST", path: "/v1/admin/agents/:id/messages", auth: "either", handle: sendMessage },
-  { method: "GET", path: "/v1/admin/agents/:id/inbox", auth: "either", handle: getInbox },
-  { method: "POST", path: "/v1/admin/agents/:id/inbox/:msgId/ack", auth: "either", handle: ackMessage },
-  { method: "POST", path: "/v1/admin/agents/:id/subscribe", auth: "either", handle: subscribeEvents },
-  { method: "POST", path: "/v1/admin/agents/:id/heartbeat", auth: "either", handle: heartbeat },
-  // Scheduler
-  { method: "GET", path: "/v1/admin/scheduler/jobs", auth: "either", handle: listJobs },
-  { method: "POST", path: "/v1/admin/scheduler/jobs", auth: "either", handle: scheduleJob },
-  { method: "POST", path: "/v1/admin/scheduler/jobs/:jobId/pause", auth: "either", handle: pauseJob },
-  { method: "POST", path: "/v1/admin/scheduler/jobs/:jobId/resume", auth: "either", handle: resumeJob },
-  { method: "POST", path: "/v1/admin/scheduler/check-loop", auth: "either", handle: checkLoop },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },

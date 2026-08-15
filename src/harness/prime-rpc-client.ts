@@ -256,12 +256,10 @@ export class PrimeRpcClient {
   ): Promise<void> {
     const io = this.io;
     if (!io) throw new Error("client not started");
-    const payload =
-      response.cancelled === true
-        ? { type: "extension_ui_response", id, cancelled: true }
-        : response.value !== undefined
-          ? { type: "extension_ui_response", id, value: response.value }
-          : { type: "extension_ui_response", id, confirmed: response.confirmed === true };
+    let payload: { type: "extension_ui_response"; id: string; cancelled?: boolean; value?: string; confirmed?: boolean };
+    if (response.cancelled === true) payload = { type: "extension_ui_response", id, cancelled: true };
+    else if (response.value !== undefined) payload = { type: "extension_ui_response", id, value: response.value };
+    else payload = { type: "extension_ui_response", id, confirmed: response.confirmed === true };
     io.write(serializeJsonLine(payload));
   }
 

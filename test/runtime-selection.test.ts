@@ -60,6 +60,23 @@ test("runtime resolution falls back to the first approved harness when deploymen
   });
 });
 
+test("a mock deployment ignores approved and persisted real runtime choices", async () => {
+  const baseModels = createMemoryMap<PersistedBaseModel>();
+  const approvedHarnesses = createMemoryMap<PersistedApprovedHarnesses>();
+  const writer = createMemoryConfigStore("default-org", { baseModels, approvedHarnesses });
+  const reader = createMemoryConfigStore("default-org", { baseModels, approvedHarnesses });
+  const mock = { harnessId: "mock" as const, modelId: "claude-opus-5" };
+
+  writer.setApprovedHarnesses(["pi"]);
+  await writer.setRuntimeSelectionLatest(ORG, { harnessId: "pi", modelId: "claude-opus-4-8" });
+  await writer.setRuntimeSelectionLatest(PERSONAL, { harnessId: "pi", modelId: "claude-sonnet-5" });
+  await writer.flushScope(ORG);
+  await writer.flushScope(PERSONAL);
+
+  assert.deepEqual(resolveRuntimeChoice(writer, ORG, PERSONAL, mock, { harnessId: "pi", modelId: "claude-opus-4-8" }), mock);
+  assert.deepEqual(await resolveRuntimeChoiceDurable(reader, ORG, PERSONAL, mock), mock);
+});
+
 test("runtime resolution reads approvals and selections from shared durable state on every turn", async () => {
   const baseModels = createMemoryMap<PersistedBaseModel>();
   const approvedHarnesses = createMemoryMap<PersistedApprovedHarnesses>();
@@ -82,6 +99,38 @@ test("runtime resolution reads approvals and selections from shared durable stat
   await assert.rejects(
     resolveRuntimeChoiceDurable(reader, ORG, PERSONAL, fallback, { harnessId: "pi", modelId: "claude-opus-4-8" }),
     /not approved/,
+  );
+});
+
+test("a persisted Pi model is deferred to Pi instead of silently falling back when its registry entry is stale", async () => {
+  const config = createMemoryConfigStore("default-org");
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-4-8" };
+  config.setApprovedHarnesses(["pi"]);
+  await config.setRuntimeSelectionLatest(ORG, { harnessId: "pi", modelId: "race-model" });
+
+  assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, fallback), {
+    harnessId: "pi",
+    modelId: "race-model",
+  });
+  assert.deepEqual(await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback), {
+    harnessId: "pi",
+    modelId: "race-model",
+  });
+  assert.throws(
+    () => resolveRuntimeChoice(config, ORG, PERSONAL, fallback, { harnessId: "pi", modelId: "race-model" }),
+    /not approved/,
+  );
+});
+
+test("a strict runtime mode rejects a persisted choice for a different harness", async () => {
+  const config = createMemoryConfigStore("default-org");
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-4-8" };
+  config.setApprovedHarnesses(["pi"]);
+  await config.setRuntimeSelectionLatest(ORG, { harnessId: "codex", modelId: "gpt-5.6-sol" });
+
+  await assert.rejects(
+    resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, { strictHarness: "pi" }),
+    /not permitted in this mode/,
   );
 });
 

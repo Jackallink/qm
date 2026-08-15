@@ -58,6 +58,16 @@ export interface DeploymentState {
   orgId: string;
   network: string;
   pgPassword?: string;
+  images?: Record<string, DeploymentImageEvidence>;
+}
+
+export interface DeploymentImageEvidence {
+  kind: "release" | "build-from";
+  source: string;
+  imageId: string;
+  releaseDigest?: string;
+  gitCommit?: string;
+  dirty?: boolean;
 }
 
 export function readDeploymentState(orgId: string): DeploymentState | undefined {

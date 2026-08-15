@@ -6,7 +6,7 @@
  * - createSandboxProcessIo (prime-rpc-io-sandbox.ts): run inside a QM
  *   sandbox via startProcess/readProcess/writeStdin/signalProcess
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 export interface PrimeRpcIo {
   readonly kind: string;
@@ -27,7 +27,7 @@ export interface ChildProcessIoOptions {
   cliPath: string;
   args: string[];
   cwd?: string;
-  env?: Record<string, string>;
+  env?: NodeJS.ProcessEnv;
 }
 
 export function createChildProcessIo(opts: ChildProcessIoOptions): PrimeRpcIo {
@@ -42,9 +42,14 @@ export function createChildProcessIo(opts: ChildProcessIoOptions): PrimeRpcIo {
     async start() {
       if (child) throw new Error("io already started");
       const useNode = /\.(js|mjs|cjs)$/.test(opts.cliPath);
+      const spawnOptions: SpawnOptions = {
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts.env ? { env: opts.env } : {}),
+        stdio: ["pipe", "pipe", "pipe"],
+      };
       child = useNode
-        ? spawn("node", [opts.cliPath, ...opts.args], { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"] })
-        : spawn(opts.cliPath, opts.args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"] });
+        ? spawn("node", [opts.cliPath, ...opts.args], spawnOptions)
+        : spawn(opts.cliPath, opts.args, spawnOptions);
       child.stderr?.on("data", (data: Buffer) => {
         stderr += data.toString();
       });

@@ -5,7 +5,7 @@ import { readEnvFile } from "../util.ts";
 import { CliError, errMessage, header, note, ok, step, warn } from "../log.ts";
 import { validateSandboxLayer, type SandboxValidation } from "../sandbox-layer.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
-import { mockHarnessWarning, sandboxPinPending, type QmConfig } from "../config.ts";
+import { isSandboxDisabled, mockHarnessWarning, sandboxPinPending, type QmConfig } from "../config.ts";
 import { computedSecrets, runtimeSecretNames, type ComputedSecret } from "../secrets.ts";
 import { isVirtualService, runnableServices } from "../services.ts";
 import { serviceEnvironment } from "../backends/aws.ts";
@@ -28,9 +28,15 @@ export function runChecks(
   const { plugins, errors: pluginErrors } = discoverPlugins(configDir, config);
   const configErrors: Array<{ clause: string; message: string }> = [];
   const configError = (message: string, clause = "config.v1"): void => void configErrors.push({ clause, message });
+  if (isSandboxDisabled(config) && (layer.tools.length || layer.skills.length || layer.hasDockerfile)) {
+    configError("a disabled sandbox does not allow a sandbox layer", "config.v1");
+  }
+  if (isSandboxDisabled(config) && plugins.length) {
+    configError("a disabled sandbox does not allow plugins", "config.v1");
+  }
   const provider = hostingProvider(config.target);
   configErrors.push(...provider.validateConfig(config, plugins));
-  if (provider.requiresSandboxApp && !config.sandbox?.app?.trim()) {
+  if (provider.requiresSandboxApp && config.sandbox?.backend !== "disabled" && !config.sandbox?.app?.trim()) {
     configError("contract sandbox.app: a Fly agent-computer app is required for docker and fly targets");
   }
   for (const skill of config.skills) {

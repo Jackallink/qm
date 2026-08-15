@@ -56,6 +56,8 @@ test("help lists every deploy + develop command and the deploy-wide options", as
       "sandbox build",
       "infra build-image",
       "infra delete-task-definitions",
+      "local bootstrap",
+      "local verify",
     ]) {
       assert.match(out, new RegExp(`\\b${cmd.replace(" ", "\\s")}`), `help should list ${cmd}`);
     }

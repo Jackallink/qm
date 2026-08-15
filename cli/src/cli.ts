@@ -25,6 +25,11 @@ import { assertNodeEngine } from "./preflight.ts";
 import { devCiDown, devCiUp } from "./backends/dev-ci.ts";
 import { hostingProvider, hostingProviderUpFlags, type DeployContext } from "./backends/registry.ts";
 import { runConformance } from "./commands/conformance.ts";
+import {
+  runLocalDockerBootstrap,
+  runLocalDockerVerifier,
+  type LocalCustomProviderInput,
+} from "./commands/local-docker.ts";
 import { renderSlackFiles, runOutputs } from "./commands/outputs.ts";
 import { cliVersion } from "./manifest.ts";
 import { renderTerraformVars } from "./terraform.ts";
@@ -138,6 +143,13 @@ ${bold("DEPLOY (operator)")} ${dim("— runs in the deployment directory")}
   infra build-image                        build the AWS deploy MicroVM image and record its pin
   infra delete-image --yes                 terminate its MicroVMs and delete the AWS deploy image
   infra delete-task-definitions --yes      delete the stack's AWS ECS task definition revisions
+  local bootstrap --principal <id> --provider <slug> --provider-name <name>
+       --protocol openai|anthropic --base-url <https-url> --model <id>
+       --model-name <name> --context-window <n> --max-tokens <n>
+                                           register a host-only custom provider from D0L_PROVIDER_API_KEY
+                                           in the protected local secret file, then select Pi for this org
+  local verify --principal <id> --text <prompt>
+                                           submit one host-only text smoke through loopback Web and wait for reply
   conformance [dir] [--static]             run static gates and compare the live resolved layer
   secrets push [--from <env-file>]         upload the computed secret set to the target store
   secrets set <KEY> [<value>]              write one .env value in place (dedupes the key, keeps
@@ -215,6 +227,22 @@ function intFlag(flags: Flags, name: string): number | undefined {
   if (s === undefined) return undefined;
   if (!/^\d+$/.test(s)) throw new CliError(`--${name} must be a non-negative integer`, { clause: "cli.invocation" });
   return Number(s);
+}
+
+function requiredStringFlag(flags: Flags, name: string): string {
+  const value = strFlag(flags, name);
+  if (value === undefined || !value.trim()) {
+    throw new CliError(`--${name} needs a value`, { clause: "cli.invocation" });
+  }
+  return value;
+}
+
+function positiveIntFlag(flags: Flags, name: string): number {
+  const value = intFlag(flags, name);
+  if (value === undefined || value <= 0) {
+    throw new CliError(`--${name} must be a positive integer`, { clause: "cli.invocation" });
+  }
+  return value;
 }
 
 const followFlag = (flags: Flags): boolean => boolFlag(flags, "f") || boolFlag(flags, "follow");
@@ -433,6 +461,86 @@ async function dispatch(argv: string[]): Promise<void> {
       const ctx = deployContext(flags, positionals[0]);
       await runConformance(ctx, { runtime: !boolFlag(flags, "static") });
       return;
+    }
+
+    case "local": {
+      const sub = positionals[0];
+      if (sub === "bootstrap") {
+        rejectUnknownFlags(flags, [
+          "config",
+          "env-file",
+          "sandbox-dir",
+          "target",
+          "principal",
+          "core-url",
+          "provider",
+          "provider-name",
+          "protocol",
+          "base-url",
+          "model",
+          "model-name",
+          "context-window",
+          "max-tokens",
+        ]);
+        rejectExtraPositionals(positionals, 1);
+        const protocol = requiredStringFlag(flags, "protocol");
+        if (protocol !== "openai" && protocol !== "anthropic") {
+          throw new CliError("--protocol must be openai or anthropic", { clause: "cli.invocation" });
+        }
+        const ctx = deployContext(flags);
+        const provider: LocalCustomProviderInput = {
+          id: requiredStringFlag(flags, "provider"),
+          name: requiredStringFlag(flags, "provider-name"),
+          protocol,
+          baseUrl: requiredStringFlag(flags, "base-url"),
+          model: {
+            id: requiredStringFlag(flags, "model"),
+            name: requiredStringFlag(flags, "model-name"),
+            contextWindow: positiveIntFlag(flags, "context-window"),
+            maxTokens: positiveIntFlag(flags, "max-tokens"),
+          },
+        };
+        const result = await runLocalDockerBootstrap({
+          config: ctx.config,
+          configDir: ctx.configDir,
+          ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
+          principal: requiredStringFlag(flags, "principal"),
+          provider,
+          ...(strFlag(flags, "core-url") ? { coreUrl: strFlag(flags, "core-url") } : {}),
+        });
+        ok(`local Docker bootstrap registered ${result.providerId}/${result.modelId} for ${result.scopeId}`);
+        return;
+      }
+      if (sub === "verify") {
+        rejectUnknownFlags(flags, [
+          "config",
+          "env-file",
+          "sandbox-dir",
+          "target",
+          "principal",
+          "web-url",
+          "text",
+          "thread-ref",
+          "timeout-seconds",
+        ]);
+        rejectExtraPositionals(positionals, 1);
+        const timeoutSeconds = intFlag(flags, "timeout-seconds");
+        const ctx = deployContext(flags);
+        const result = await runLocalDockerVerifier({
+          config: ctx.config,
+          configDir: ctx.configDir,
+          ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
+          principal: requiredStringFlag(flags, "principal"),
+          text: requiredStringFlag(flags, "text"),
+          ...(strFlag(flags, "web-url") ? { webUrl: strFlag(flags, "web-url") } : {}),
+          ...(strFlag(flags, "thread-ref") ? { threadRef: strFlag(flags, "thread-ref") } : {}),
+          ...(timeoutSeconds !== undefined ? { timeoutMs: timeoutSeconds * 1_000 } : {}),
+        });
+        ok(`local Docker verifier completed run ${result.runId}`);
+        note(result.reply);
+        return;
+      }
+      throw new CliError(`usage: ${CLI_NAME} local bootstrap|verify ...`, { clause: "cli.invocation" });
     }
 
     case "infra": {

@@ -15,7 +15,7 @@ export function hasParentPathSegment(path: string): boolean {
   return path.split("/").includes("..");
 }
 
-type WritablePersistence = "snapshot_to_workspace" | "resident_disk";
+type WritablePersistence = "none" | "snapshot_to_workspace" | "resident_disk";
 export type EgressEnforcement = "none" | "ip_port" | "domain";
 
 export interface AgentComputerSpec {
@@ -155,6 +155,7 @@ export interface Sandbox {
 export class CapabilityUnsupportedError extends Error {
   readonly backend: string;
   readonly capability: string;
+  readonly retryable = false;
   constructor(backend: string, capability: string) {
     super(`this computer's substrate (${backend}) does not support ${capability}`);
     this.name = "CapabilityUnsupportedError";

@@ -148,7 +148,7 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.equal(model!.provider, "qa");
     assert.equal((model as { baseUrl?: string }).baseUrl, upstreamUrl);
     assert.equal(modelSupportedByHarness("qa-chat", "pi"), true);
-    assert.equal(modelSupportedByHarness("qa-chat", "opencode"), true);
+    assert.equal(modelSupportedByHarness("qa-chat", "opencode"), false);
     assert.equal(modelSupportedByHarness("qa-chat", "codex"), false);
     assert.equal(modelServiceable("qa-chat", { anthropic: false, openai: false, openrouter: false }), true);
 
@@ -193,6 +193,65 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
   } finally {
     server.close();
     upstream.close();
+  }
+});
+
+test("QA: a DeepSeek model id routes through a custom provider alias", async () => {
+  const seen: Array<{ path: string; auth?: string; model?: string }> = [];
+  const upstream = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const record: (typeof seen)[0] = { path: req.url ?? "", auth: req.headers.authorization as string | undefined };
+      if (!req.url?.endsWith("/chat/completions")) {
+        seen.push(record);
+        res.writeHead(404);
+        return res.end();
+      }
+      record.model = (JSON.parse(body) as { model?: string }).model;
+      seen.push(record);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(
+        `data: ${JSON.stringify({ id: "cmpl-deepseek", object: "chat.completion.chunk", model: "deepseek-v4-flash", choices: [{ index: 0, delta: { role: "assistant", content: "DEEPSEEK ALIAS REPLY" }, finish_reason: null }] })}\n\n`,
+      );
+      res.write(
+        `data: ${JSON.stringify({ id: "cmpl-deepseek", object: "chat.completion.chunk", model: "deepseek-v4-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/v1`;
+  setCustomProviders([
+    {
+      id: "deepseek-local",
+      name: "DeepSeek Local",
+      protocol: "openai",
+      baseUrl,
+      models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+    },
+  ]);
+  try {
+    const model = resolveModel("deepseek-v4-flash");
+    assert.equal(model?.provider, "deepseek-local");
+    const reply = await oneShot(
+      "deepseek-alias",
+      model as Model<Api>,
+      { "deepseek-local": "sk-deepseek-local" },
+      "be terse",
+      "reply",
+    );
+    assert.equal(reply, "DEEPSEEK ALIAS REPLY");
+    assert.deepEqual(seen, [
+      {
+        path: "/v1/chat/completions",
+        auth: "Bearer sk-deepseek-local",
+        model: "deepseek-v4-flash",
+      },
+    ]);
+  } finally {
+    setCustomProviders([]);
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
 });
 

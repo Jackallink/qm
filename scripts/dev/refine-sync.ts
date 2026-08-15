@@ -80,7 +80,7 @@ async function main() {
   console.log("appliedEdits:", ((data?.appliedEdits as unknown[] | undefined) ?? []).length);
 
   console.log("\n== 3. 读取 harness state，提取 skill entries ==");
-  let skills = [];
+  const skills = [];
   try {
     const raw = readFileSync(String(data.harnessStatePath), "utf8");
     const hs = JSON.parse(raw) as { entries?: { skill?: Record<string, { scope?: string; title?: string; content?: string; metadata?: Record<string, unknown> }> } };

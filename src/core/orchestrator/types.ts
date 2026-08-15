@@ -92,6 +92,7 @@ export interface OrchestratorInput extends Omit<
 
 export interface OrchestratorDeps {
   identity: IdentityService;
+  textOnly?: boolean;
   resolution: ResolutionService;
   config?: ScopedConfigStore;
   resolveBaseModelId?: () => string | undefined;

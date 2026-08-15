@@ -16,7 +16,7 @@ export interface AgentRuntime {
 const runningAgents = new Map<string, ChildProcess>();
 
 export async function launchAgent(manifest: AgentManifest): Promise<AgentRuntime> {
-  const bin = process.env.PRIME_BIN || "prime-agent";
+  const bin = "prime-agent";
   const useNode = bin.endsWith(".js") || bin.endsWith(".mjs");
 
   if (runningAgents.has(manifest.id)) {
@@ -32,8 +32,8 @@ export async function launchAgent(manifest: AgentManifest): Promise<AgentRuntime
   let child: ChildProcess;
   try {
     child = useNode
-      ? spawn("node", [bin, ...args], { detached: true, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...getAgentEnv(manifest) } })
-      : spawn(bin, args, { detached: true, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...getAgentEnv(manifest) } });
+      ? spawn("node", [bin, ...args], { detached: true, stdio: ["ignore", "ignore", "ignore"] })
+      : spawn(bin, args, { detached: true, stdio: ["ignore", "ignore", "ignore"] });
   } catch (error) {
     return { agentId: manifest.id, status: "error", startedAt: Date.now(), errorMessage: "spawn: " + ((error as Error).message || String(error)) };
   }
@@ -42,7 +42,7 @@ export async function launchAgent(manifest: AgentManifest): Promise<AgentRuntime
   runningAgents.set(manifest.id, child);
 
   await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => { if (child.exitCode !== null) reject(new Error(`exit ${child.exitCode}`)); else resolve(); }, 2000);
+    setTimeout(() => { if (child.exitCode !== null) reject(new Error(`exit ${child.exitCode}`)); else resolve(); }, 2000);
   });
 
   return { agentId: manifest.id, status: "online", pid: child.pid!, sessionId: `agent-${manifest.id}-${Date.now().toString(36)}`, startedAt: Date.now() };
@@ -63,11 +63,4 @@ function resolveProvider(modelId: string): string {
   if (modelId.startsWith("claude-")) return "anthropic";
   if (modelId.startsWith("gpt-") || modelId.startsWith("o1")) return "openai";
   return "deepseek";
-}
-function getAgentEnv(m: AgentManifest): Record<string, string> {
-  const e: Record<string, string> = {};
-  if (process.env.DEEPSEEK_API_KEY) e.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-  if (process.env.ANTHROPIC_API_KEY) e.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  if (process.env.OPENAI_API_KEY) e.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  return e;
 }

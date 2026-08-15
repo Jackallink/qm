@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { runInit } from "../src/commands/init.ts";
 import { CONFIG_FILENAME, loadConfigInDir } from "../src/config.ts";
 import { cliVersion } from "../src/manifest.ts";
-import { parseToolDescriptor, validateSandboxLayer } from "../src/sandbox-layer.ts";
 import { SERVICE_NAMES, VIRTUAL_SERVICE_NAMES } from "../src/services.ts";
 import { renderEnvExample } from "../src/secrets.ts";
 import { runChecks } from "../src/commands/check.ts";
@@ -42,7 +41,7 @@ function captureInit(opts: Parameters<typeof runInit>[0]): string {
   }
 }
 
-test("init scaffolds a loadable config, generated local secrets, and a valid sandbox/ layer", () => {
+test("init scaffolds a loadable D0-L config and generated local secrets", () => {
   const base = mkdtempSync(join(tmpdir(), "qm-init-"));
   try {
     const dir = join(base, "nested", "acme");
@@ -56,21 +55,36 @@ test("init scaffolds a loadable config, generated local secrets, and a valid san
     const { config } = loadConfigInDir(dir);
     assert.equal(config.orgId, "acme");
     assert.equal(config.target, "docker");
-    assert.equal(config.publicUrl, "http://localhost:8082");
+    assert.equal(config.publicUrl, "http://127.0.0.1:8081");
     assert.equal(config.env.core?.HARNESS, "pi");
-    assert.equal(config.modelProvider, "anthropic", "init names a base model provider by default");
-    assert.deepEqual(config.sandbox, { app: "acme-sandboxes" });
+    assert.equal(config.env.core?.NODE_ENV, "production");
+    assert.equal(config.env.core?.TEXT_ONLY_MODE, "true");
+    assert.equal(config.env.core?.MEMORY_RECALL, "off");
+    assert.equal(config.env.core?.MEMORY_CAPTURE, "off");
+    assert.equal(config.env.portal?.NODE_ENV, "development");
+    assert.deepEqual(config.services, ["core", "web-ui", "admin", "portal"]);
+    assert.equal(config.modelProvider, undefined, "the D0-L scaffold defers model selection to host bootstrap");
+    assert.deepEqual(config.sandbox, { backend: "disabled" });
+    assert.deepEqual(config.secretEnv?.core, { ADMIN_GRANTS: "ADMIN_GRANTS" });
 
     const env = readFileSync(join(dir, ".env.example"), "utf8");
     assert.equal(env, renderEnvExample(config), ".env.example is exactly renderEnvExample output");
-    // The scaffold names anthropic as the base model provider, so its key is required
-    // rather than deferred to Admin; the providers not selected stay optional.
-    for (const line of ["CORE_SIGNING_SECRET=", "SKILL_SIGNING_SECRET=", "ANTHROPIC_API_KEY="]) {
+    for (const line of [
+      "CORE_SIGNING_SECRET=",
+      "SKILL_SIGNING_SECRET=",
+      "PORTAL_SESSION_SECRET=",
+      "ADMIN_GRANTS=",
+      "D0L_PROVIDER_API_KEY=",
+    ]) {
       assert.ok(env.split("\n").includes(line), `.env.example should require ${line}`);
     }
-    for (const line of ["# OPENROUTER_API_KEY=  # optional"]) {
+    for (const line of ["# ANTHROPIC_API_KEY=  # optional", "# OPENROUTER_API_KEY=  # optional"]) {
       assert.ok(env.split("\n").includes(line), `.env.example should offer ${line}`);
     }
+    assert.ok(
+      env.split("\n").includes("# PUBLIC_API_URL="),
+      ".env.example should record that D0-L does not need a sandbox-reachable self API",
+    );
     // OPENAI_API_KEY answers to two independent rules; the catalog lists both so neither
     // route to requiring it is hidden behind the other.
     for (const line of [
@@ -95,7 +109,7 @@ test("init scaffolds a loadable config, generated local secrets, and a valid san
     assert.ok(gitignore.includes(".env"), ".gitignore should cover .env");
 
     const agentsMd = readFileSync(join(dir, "AGENTS.md"), "utf8");
-    for (const piece of [CONFIG_FILENAME, ".env.example", "sandbox/", "npm exec qm -- check", "npm exec qm -- up"]) {
+    for (const piece of [CONFIG_FILENAME, ".env.example", "npm exec qm -- check", "npm exec qm -- up"]) {
       assert.ok(agentsMd.includes(piece), `AGENTS.md should mention ${piece}`);
     }
     assert.doesNotMatch(env, /ORG_ID=|PORT=|HARNESS=/);
@@ -104,29 +118,7 @@ test("init scaffolds a loadable config, generated local secrets, and a valid san
     assert.match(manifest, /^ {4}display_name: qm$/m);
     assert.equal(existsSync(join(dir, "slack-sso-manifest.yml")), false);
 
-    const skill = readFileSync(join(dir, "sandbox", "skills", "greet", "SKILL.md"), "utf8");
-    assert.match(skill, /name: greet/);
-    assert.match(skill, /description: Greet a teammate by name/);
-    assert.match(skill, /example-tool/);
-
-    const tj = parseToolDescriptor(
-      readFileSync(join(dir, "sandbox", "tools", "example-tool", "tool.json"), "utf8"),
-      "tool.json",
-    );
-    assert.equal(tj.id, "example-tool");
-    assert.equal(tj.advertise, "example-tool");
-    assert.equal(tj.install?.binary, "example-tool");
-
-    const exe = join(dir, "sandbox", "tools", "example-tool", "example-tool");
-    assert.ok(existsSync(exe));
-    assert.ok(statSync(exe).mode & 0o111, "executable bit set on the tool binary");
-    assert.match(readFileSync(exe, "utf8"), /Hello/);
-
-    const layer = validateSandboxLayer(join(dir, "sandbox"));
-    assert.deepEqual(layer.errors, [], "scaffolded sandbox layer must validate clean");
-    assert.equal(layer.tools.length, 1);
-    assert.equal(layer.skills.length, 1);
-    assert.ok(layer.tools[0]!.executablePath, "the example tool ships an executable");
+    assert.equal(existsSync(join(dir, "sandbox")), false);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -219,11 +211,20 @@ test("init keeps stable qm Slack branding for long org ids", () => {
   }
 });
 
-test("init derives sandbox.app from --org", () => {
+test("init creates the D0-L disabled local Docker profile", () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-init-"));
   try {
     quiet(() => runInit({ dir, org: "globex" }));
-    assert.deepEqual(loadConfigInDir(dir).config.sandbox, { app: "globex-sandboxes" });
+    const config = loadConfigInDir(dir).config;
+    assert.equal(config.publicUrl, "http://127.0.0.1:8081");
+    assert.deepEqual(config.sandbox, { backend: "disabled" });
+    assert.equal(config.env.portal?.PORTAL_PLAYGROUND, undefined);
+    assert.equal(config.env.portal?.PORTAL_LOCAL_AUTH_BYPASS, undefined);
+    const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
+    assert.match(agents, /health-only/);
+    assert.match(agents, /browser login\/admin/i);
+    assert.match(agents, /agent execute/i);
+    assert.match(readFileSync(join(dir, ".env"), "utf8"), /^PORTAL_SESSION_SECRET=[a-f0-9]{64}$/m);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

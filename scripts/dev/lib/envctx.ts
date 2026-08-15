@@ -126,7 +126,12 @@ export async function assembleEnv(opts: {
   }
 
   let harness: "pi" | "mock" | "opencode" | "codex" | "claude";
-  if (opts.callerEnv.HARNESS === "codex" || opts.callerEnv.HARNESS === "claude") {
+  if (opts.callerEnv.HARNESS === "mock") {
+    if (!opts.allowMock) throw new Error("HARNESS=mock requires DEV_INSTANCE_ALLOW_MOCK=1");
+    harness = "mock";
+    env.HARNESS = "mock";
+    warnings.push("mock turns explicitly selected by HARNESS=mock and DEV_INSTANCE_ALLOW_MOCK=1");
+  } else if (opts.callerEnv.HARNESS === "codex" || opts.callerEnv.HARNESS === "claude") {
     harness = opts.callerEnv.HARNESS;
     env.HARNESS = harness;
     if (harness === "codex" && !env.OPENAI_API_KEY) {

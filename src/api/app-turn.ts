@@ -13,9 +13,10 @@ import {
   modelProviderAvailabilityFor,
   modelServiceable,
 } from "../model/pi-models.ts";
-import { selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
+import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
 import { errMessage } from "../util/errors.ts";
+import { textOnlyModelRefusal, textOnlyTurnRefusal } from "../core/text-only.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
 import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
@@ -54,6 +55,10 @@ export function createTurnMethods(
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
   return {
     async turn(req: TurnRequest): Promise<TurnResult> {
+      if (deps.textOnly) {
+        const refusal = textOnlyTurnRefusal(req);
+        if (refusal) return { status: "refused", reason: refusal };
+      }
       await deps.identity.refresh();
       const actor: Principal = deps.identity.resolve(req.actor);
       let projectAudience: Principal[] | undefined;
@@ -119,6 +124,7 @@ export function createTurnMethods(
         } else if (threadRef.startsWith("web:") && !threadRef.startsWith(`web:${actor.id}:`)) {
           return { status: "refused", reason: "you can only start a new conversation on your own thread" };
         }
+        await deps.refreshCustomProviders?.();
         const org = scopeId("org", orgIdOf());
         const targetScope =
           req.conversation.kind === "dm"
@@ -133,14 +139,19 @@ export function createTurnMethods(
         let configuredRuntime;
         let runtime;
         try {
-          orgRuntime = await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback);
+          orgRuntime = await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback, {
+            ...(deps.textOnly ? { strictHarness: "pi" as const } : {}),
+          });
           configuredRuntime =
             targetScope === org
               ? orgRuntime
-              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback);
+              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, {
+                  ...(deps.textOnly ? { strictHarness: "pi" as const } : {}),
+                });
           runtime =
             req.harness || req.model
               ? await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, {
+                  ...(deps.textOnly ? { strictHarness: "pi" as const } : {}),
                   ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
                   ...(req.model ? { modelId: req.model } : {}),
                 })
@@ -148,38 +159,50 @@ export function createTurnMethods(
         } catch (error) {
           return { status: "refused", reason: errMessage(error) };
         }
+        if (deps.textOnly && runtime.harnessId !== "pi") {
+          return { status: "refused", reason: "text-only mode only permits the pi harness" };
+        }
+        if (deps.textOnly) {
+          const refusal = textOnlyModelRefusal(await deps.customProviders?.runtimeSnapshot(), runtime.modelId);
+          if (refusal) return { status: "refused", reason: refusal };
+        }
         if (req.harness && !isHarnessId(req.harness)) {
           return { status: "refused", reason: `runtime ${req.harness} is not approved` };
         }
-        const configuredKeys = deps.providerKeys ??
-          deps.modelProviders ?? { anthropic: false, openai: false, openrouter: false };
-        let providers = deps.modelProviders;
-        if (deps.modelCredentials) {
-          providers = modelProviderAvailabilityFor(
-            runtime.harnessId,
-            configuredKeys,
-            await deps.modelCredentials.availability(),
-          );
-        } else if (deps.providerKeys) {
-          providers = modelProviderAvailabilityFor(runtime.harnessId, configuredKeys);
-        }
-        if (providers && !modelServiceable(runtime.modelId, providers)) {
-          return {
-            status: "refused",
-            reason: "that model isn't available on this deployment (its provider isn't configured)",
-          };
+        let providers;
+        if (!deps.textOnly) {
+          const configuredKeys = deps.providerKeys ??
+            deps.modelProviders ?? { anthropic: false, openai: false, openrouter: false };
+          providers = deps.modelProviders;
+          if (deps.modelCredentials) {
+            providers = modelProviderAvailabilityFor(
+              runtime.harnessId,
+              configuredKeys,
+              await deps.modelCredentials.availability(),
+            );
+          } else if (deps.providerKeys) {
+            providers = modelProviderAvailabilityFor(runtime.harnessId, configuredKeys);
+          }
+          if (providers && !modelServiceable(runtime.modelId, providers)) {
+            return {
+              status: "refused",
+              reason: "that model isn't available on this deployment (its provider isn't configured)",
+            };
+          }
         }
         const configuredWebuiModels = await deps.config.getWebuiModelsDurable(org);
-        let enabledWebuiModels: string[] | null = null;
-        if (configuredWebuiModels?.length) {
+        let enabledWebuiModels: string[];
+        if (deps.textOnly) {
+          enabledWebuiModels = [runtime.modelId];
+        } else if (configuredWebuiModels?.length) {
           enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];
-        } else if (providers?.openrouter) {
+        } else {
+          const catalog = providers?.openrouter
+            ? await selectableModelCatalog(deps.modelCredentialFetch)
+            : builtInModelCatalog();
           enabledWebuiModels = [
             ...new Set([
-              ...selectableCatalogForHarness(
-                await selectableModelCatalog(deps.modelCredentialFetch),
-                runtime.harnessId,
-              ).map((model) => model.id),
+              ...selectableCatalogForHarness(catalog, runtime.harnessId).map((model) => model.id),
               ...(orgRuntime.harnessId === runtime.harnessId ? [orgRuntime.modelId] : []),
             ]),
           ];
@@ -239,7 +262,7 @@ export function createTurnMethods(
         ...(req.harness ? { harness: req.harness } : {}),
         ...(req.model ? { model: req.model } : {}),
         ...turnModelOptions(req),
-        ...(req.readOnly ? { readOnly: true } : {}),
+        ...(deps.textOnly || req.readOnly ? { readOnly: true } : {}),
         ...(req.surfaceTools ? { surfaceTools: true } : {}),
         ...(req.envelopeWrapped ? { envelopeWrapped: true } : {}),
         ...(typeof req.displayText === "string" && req.displayText ? { displayText: req.displayText } : {}),
@@ -350,7 +373,7 @@ export function createTurnMethods(
         }
       }
 
-      const spineRouted = !req.approval && shouldRouteToSpine(request as OrchestratorInput);
+      const spineRouted = !deps.textOnly && !req.approval && shouldRouteToSpine(request as OrchestratorInput);
       if (spineRouted) {
         request = { ...input, surfaceTools: true };
         if (origin.kind !== "ambient")
@@ -501,6 +524,7 @@ export function createTurnMethods(
       await deps.signals.send(runId, signal);
       const after = await deps.runs.get(runId);
       if (!after || isTerminal(after.status)) {
+        if (deps.textOnly) return { accepted: false, reason: "terminal" };
         await replayOrphanedRunSignals(runId);
         if (signal.kind !== "steer") return { accepted: false, reason: "terminal" };
         // The steer was stored before the run went terminal, so its text is replayed as

@@ -39,10 +39,6 @@ function agentKey(workspace: string, agentId: string): string {
   return `agent:${workspace}:${agentId}`;
 }
 
-function workspacePrefix(workspace: string): string {
-  return `agent:${workspace}:`;
-}
-
 /** 从模板构建默认 Manifest */
 export function newAgentFromTemplate(
   workspace: string,
@@ -108,7 +104,6 @@ export function createAgentRegistryStore(backing: DurableMap<AgentManifest>): Ag
 
     async list(workspace: string): Promise<AgentManifest[]> {
       const all = await backing.all();
-      const prefix = workspacePrefix(workspace);
       return all.filter((m) => m.workspace === workspace);
     },
 

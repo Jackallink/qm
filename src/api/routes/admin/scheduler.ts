@@ -3,7 +3,7 @@
  */
 import { sendJson } from "../../http.ts";
 import type { ApiCtx, Route } from "../route.ts";
-import { audit, authorizeAdmin, orgScope } from "../shared.ts";
+import { authorizeAdmin, orgScope } from "../shared.ts";
 
 export async function listJobs(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.schedulerStore) return sendJson(ctx.res, 404, { error: "not_found" });

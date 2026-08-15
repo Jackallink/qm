@@ -8,8 +8,6 @@
  * - 多租户：单租户故障不影响其他租户
  */
 
-import type { AgentManifest } from "./agent-manifest.ts";
-
 /** 降级状态 */
 export type DegradedStatus = "normal" | "degraded" | "disconnected";
 
@@ -37,7 +35,6 @@ interface DegradedState {
 const agentHealthMap = new Map<string, DegradedState>();
 
 /** 心跳间隔（代理检测控制面是否可达） */
-const HEARTBEAT_INTERVAL_MS = 10_000;
 /** 控制面超时阈值（超过此时间无响应 = 控制面断开） */
 const CONTROL_PLANE_TIMEOUT_MS = 30_000;
 

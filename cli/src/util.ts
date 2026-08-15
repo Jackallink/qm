@@ -303,6 +303,22 @@ export function resolveBuildRepoRoot(explicit?: string, requiredServices: readon
   return root;
 }
 
+const sourceBuildInfoByRoot = new Map<string, { gitCommit?: string; dirty?: boolean }>();
+
+export function sourceBuildInfo(root: string): { gitCommit?: string; dirty?: boolean } {
+  const cached = sourceBuildInfoByRoot.get(root);
+  if (cached) return cached;
+  const info: { gitCommit?: string; dirty?: boolean } = {};
+  try {
+    info.gitCommit = capture("git", ["-C", root, "rev-parse", "HEAD"]).trim();
+    info.dirty = capture("git", ["-C", root, "status", "--porcelain"]).trim().length > 0;
+  } catch {
+    void 0;
+  }
+  sourceBuildInfoByRoot.set(root, info);
+  return info;
+}
+
 export function promptHidden(name: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdin.setRawMode) {
     throw new CliError(`missing ${name} in .env; an interactive terminal is required to prompt`);

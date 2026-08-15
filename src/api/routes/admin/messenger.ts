@@ -4,7 +4,6 @@
  */
 import { sendJson } from "../../http.ts";
 import type { ApiCtx, Route } from "../route.ts";
-import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
 export async function sendMessage(ctx: ApiCtx): Promise<void> {
   const { id } = ctx.params;

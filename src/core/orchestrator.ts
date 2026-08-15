@@ -60,7 +60,7 @@ import {
 } from "../security/security-posture.ts";
 import { commandApprovalId } from "./approval-id.ts";
 import { createPerTurnStrategy } from "../memory/strategies/per-turn.ts";
-import { DEFAULT_MEMORY_POLICY, recallMemoryScopes, writableMemoryScope } from "../memory/policy.ts";
+import { DEFAULT_MEMORY_POLICY, recallMemoryScopes, writableMemoryScope, type MemoryPolicy } from "../memory/policy.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { collectBlob, createMemoryBlobTransferStore } from "../persistence/blob-transfer.ts";
 import { createSkillMaterializer, skillsIndex, SKILLS_DIR } from "../skills/materialize.ts";
@@ -119,10 +119,11 @@ import {
 } from "../harness/replay.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
 import { jsonbSafeStringify } from "../util/text.ts";
-import { NonRetryableTurnError, turnFailureMessage, type TurnFailurePayload } from "./turn-error.ts";
+import { isTerminalTurnError, turnFailureMessage, type TurnFailurePayload } from "./turn-error.ts";
 import { personKey, samePerson } from "../directory/person.ts";
 import { sleep } from "../util/async.ts";
 import { hashId } from "../util/crypto.ts";
+import { textOnlyHistoryForModel, textOnlyTurnRefusal } from "./text-only.ts";
 import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution } from "../skills/skill-store.ts";
@@ -192,7 +193,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     mergeConnectors(RESIDENT_AUTH_CONNECTORS, deps.deploymentLayer?.connectors ?? []);
   const pending = deps.approvals ?? createMemoryMap<PendingApprovalRecord>();
   const approvalGrants = deps.approvalGrants ?? createMemoryMap<CommandApprovalGrant>();
-  const memoryPolicy = deps.memoryPolicy ?? DEFAULT_MEMORY_POLICY;
+  const memoryPolicy: MemoryPolicy = deps.textOnly
+    ? { recall: "off", capture: "off" }
+    : (deps.memoryPolicy ?? DEFAULT_MEMORY_POLICY);
   const memoryStrategy =
     deps.memoryStrategy ?? createPerTurnStrategy({ harness: deps.harness.models, memory: deps.memory });
   const blobTransfer = deps.blobTransfer ?? createMemoryBlobTransferStore();
@@ -389,6 +392,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     },
 
     async handleTurn(input: OrchestratorInput): Promise<TurnResult> {
+      if (deps.textOnly) {
+        const refusal = textOnlyTurnRefusal(input);
+        if (refusal) return { status: "refused", reason: refusal };
+        input.readOnly = true;
+      }
       const { actor, conversation } = input;
       const automatedTurn = input.origin.kind === "automation";
       const ambientTurn = input.origin.kind === "ambient";
@@ -746,11 +754,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           reason: "Auto quarantined suspicious or unscreenable external input before the agent ran.",
         };
       }
-      const strictReadOnly = input.readOnly === true;
+      const strictReadOnly = deps.textOnly || input.readOnly === true;
       const environmentId = await resolveEnvironmentId(deps.environments, scopeId);
       const rwLayer = resolution.layers.find((l) => l.mode === "rw");
       if (rwLayer && environmentId !== rwLayer.scopeId) rwLayer.scopeId = environmentId;
-      for (const layer of resolution.layers) await deps.workspace.ensureScope(layer.scopeId);
+      if (!deps.textOnly) {
+        for (const layer of resolution.layers) await deps.workspace.ensureScope(layer.scopeId);
+      }
 
       const memoryScopeId = writableMemoryScope(resolution.layers, scopeId);
       const recallScopes = recallMemoryScopes(memoryPolicy, resolution.layers, memoryScopeId);
@@ -825,14 +835,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ? `\n\n${deliveryMenu(delivery.candidates, delivery.defaultKey)}`
           : "";
 
-      await deps.skillsReady;
-      const configuredProviders = deps.resolveConnectorClient
-        ? await configuredConnectorProviders(deps.resolveConnectorClient).catch(
-            swallowAs("orchestrator: configured connector providers", []),
-          )
-        : [];
-      const visibleSkillsForTurn = async (): Promise<SkillResolution[]> =>
-        filterConnectorSkills((await deps.skills?.visibleFor(skillScopes)) ?? [], configuredProviders);
+      if (!deps.textOnly) await deps.skillsReady;
+      const configuredProviders =
+        !deps.textOnly && deps.resolveConnectorClient
+          ? await configuredConnectorProviders(deps.resolveConnectorClient).catch(
+              swallowAs("orchestrator: configured connector providers", []),
+            )
+          : [];
+      const visibleSkillsForTurn = async (): Promise<SkillResolution[]> => {
+        if (deps.textOnly) return [];
+        return filterConnectorSkills((await deps.skills?.visibleFor(skillScopes)) ?? [], configuredProviders);
+      };
       const visibleSkills = await visibleSkillsForTurn();
       const transferId = turnFileId(input.runId, input.attempt);
       const turnSessionDir = `${TURN_FILES_DIR}/${hashId([conversation.threadRef], 24)}`;
@@ -852,7 +865,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             '\nThis describes your durable, scoped computer — `execute` runs here by default. The opt-in scratch box (scope:"scratch") is separate: same OS and tooling, org-global files only, no logins or tokens, wiped after the turn — only for runs that confidently need no follow-up.';
         }
       }
-      if (deps.deploymentLayer?.hints.length) {
+      if (!deps.textOnly && deps.deploymentLayer?.hints.length) {
         systemPrompt += `\n\n## Deployment tool hints\n${deps.deploymentLayer.hints.map((hint) => `- ${hint}`).join("\n")}`;
       }
       if (visibleSkills.length) systemPrompt += `\n\n${skillsIndex(visibleSkills)}`;
@@ -876,7 +889,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         : "";
 
       let onboardingBlock = "";
-      if (conversation.kind === "dm" && onboardingSkillVisible(visibleSkills)) {
+      if (!deps.textOnly && conversation.kind === "dm" && onboardingSkillVisible(visibleSkills)) {
         const fullMemory = await deps.memory.read(memoryScopeId).catch(swallowAs("orchestrator: memory read", ""));
         onboardingBlock = renderPendingOnboardingPrompt(detectOnboardingStatus(fullMemory));
       }
@@ -1851,7 +1864,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (historyHasSecurityTaint) {
           await deps.harness.turns.resetSession?.(session.id);
         }
-        const visibleHistory = filterHistory(forModelContext(rawEntries, { includeSecurityTainted: false }));
+        const modelHistory = filterHistory(forModelContext(rawEntries, { includeSecurityTainted: false }));
+        const visibleHistory = deps.textOnly ? textOnlyHistoryForModel(modelHistory) : modelHistory;
         const maxEntrySeq = rawEntries.length ? rawEntries[rawEntries.length - 1]!.seq : -1;
         const rehydrateTape = (messages: readonly unknown[]) => {
           let readableHandles: Awaited<ReturnType<typeof deps.acl.handlesForAudience>> | undefined;
@@ -1886,7 +1900,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           );
         };
         const tapeRows = await (async () => {
-          if (historyHasSecurityTaint || rawEntries.length > 500) return undefined;
+          if (deps.textOnly || historyHasSecurityTaint || rawEntries.length > 500) return undefined;
           try {
             const preAppended = new Set(preAppendedSeqs);
             const priorMaxSeq = rawEntries.reduce((m, e) => (preAppended.has(e.seq) ? m : Math.max(m, e.seq)), -1);
@@ -2835,7 +2849,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           scopeLabel: scopeId,
           sessionId: session.id,
         });
-        if ((err instanceof NonRetryableTurnError || input.finalAttempt) && !input.cancel?.aborted) {
+        if ((isTerminalTurnError(err) || input.finalAttempt) && !input.cancel?.aborted) {
           if (failureUserPayload) {
             await deps.sessions
               .append(lease, { type: "user", payload: failureUserPayload, scopeLabel: scopeId as ScopeId })

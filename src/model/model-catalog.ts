@@ -79,6 +79,12 @@ async function fetchOpenRouterModels(fetcher: typeof fetch): Promise<ModelCatalo
   });
 }
 
+function mergeCatalog(dynamic: readonly ModelCatalogEntry[]): ModelCatalogEntry[] {
+  const models = builtInModelCatalog();
+  const known = new Set(models.map((model) => model.id));
+  return [...models, ...dynamic.filter((model) => model.provider === "openrouter" && !known.has(model.id))];
+}
+
 export async function selectableModelCatalog(fetcher: typeof fetch = fetch): Promise<ModelCatalogEntry[]> {
   const now = Date.now();
   const existing = cache.get(fetcher);
@@ -90,15 +96,13 @@ export async function selectableModelCatalog(fetcher: typeof fetch = fetch): Pro
   const entry = existing ?? { expiresAt: 0, models: [] };
   entry.inFlight = fetchOpenRouterModels(fetcher)
     .then((dynamic) => {
-      const models = builtInModelCatalog();
-      const known = new Set(models.map((model) => model.id));
-      entry.models = [...models, ...dynamic.filter((model) => !known.has(model.id))];
+      entry.models = mergeCatalog(dynamic);
       entry.expiresAt = Date.now() + CACHE_TTL_MS;
       entry.customVersion = customProvidersVersion();
       return entry.models;
     })
     .catch(() => {
-      entry.models = entry.models.length ? entry.models : builtInModelCatalog();
+      entry.models = mergeCatalog(entry.models);
       entry.expiresAt = Date.now() + FAILURE_TTL_MS;
       entry.customVersion = customProvidersVersion();
       return entry.models;

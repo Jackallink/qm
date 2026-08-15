@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import type { EmailTransport, ModelProvider, QmConfig } from "./config.ts";
+import { D0_LOCAL_POSTGRES_IMAGE, type EmailTransport, type ModelProvider, type QmConfig } from "./config.ts";
 import type { Target } from "./providers.ts";
 import { declaredVariables, terraformVars } from "./terraform.ts";
 
@@ -10,7 +10,7 @@ interface ScaffoldFile {
 }
 
 export interface ProviderScaffold {
-  renderConfig(orgId: string, modelProvider: ModelProvider, emailTransport: EmailTransport): string;
+  renderConfig(orgId: string, modelProvider: ModelProvider | undefined, emailTransport: EmailTransport): string;
   ignores: readonly string[];
   agentsAppendix: string;
   files(config: QmConfig): ScaffoldFile[];
@@ -21,7 +21,7 @@ export interface ProviderScaffold {
 
 interface ConfigValues {
   target: Target;
-  modelProvider: ModelProvider;
+  modelProvider: ModelProvider | undefined;
   publicUrl: string;
   providerFields: string;
   services: string[];
@@ -31,6 +31,10 @@ interface ConfigValues {
 }
 
 function renderConfig(orgId: string, values: ConfigValues): string {
+  const modelProvider =
+    values.modelProvider === undefined
+      ? '  // "modelProvider": "",\n'
+      : `  "modelProvider": ${JSON.stringify(values.modelProvider)},\n`;
   return `{
   // The deployment contract major this directory conforms to.
   "contract": 1,
@@ -49,10 +53,9 @@ function renderConfig(orgId: string, values: ConfigValues): string {
   // (one key, many models). Naming one makes that vendor's API key a required
   // deployment secret and points the base model at that vendor: \`qm setup\`
   // collects the key, \`qm doctor\` proves the provider accepts it, and \`qm up\`
-  // refuses a stack that cannot serve an agent turn. Delete this line to leave
-  // the base model unset and have an administrator add the key from the Admin
-  // page after deploy instead.
-  "modelProvider": ${JSON.stringify(values.modelProvider)},
+  // refuses a stack that cannot serve an agent turn. Omit it to leave the base
+  // model unset until an administrator provisions a provider after deploy.
+${modelProvider}
 
   // Optional base model id, passed to the harness (e.g. "claude-opus-4-6").
   // Omit it and the deployment uses the default model for the provider above.
@@ -145,28 +148,65 @@ cannot deregister or delete task definitions.
 
 const noFiles = (): ScaffoldFile[] => [];
 
+const DOCKER_AGENTS_APPENDIX = `
+## D0-L local Docker profile
+
+The Docker scaffold is a local, all-container validation profile. Docker publishes
+every service only on loopback. Core runs production Pi in text-only mode with
+memory recall and capture disabled; its sandbox backend is disabled, so this
+profile does not support agent execute, tools, files, workspace mounts, or a
+host Docker socket.
+
+Portal runs only as a development health-only loopback member. Do not treat it
+as a browser login/admin surface: this profile does not provide browser login/admin,
+Portal Playground, browser text turns, or browser Admin. Both
+\`PORTAL_PLAYGROUND\` and \`PORTAL_LOCAL_AUTH_BYPASS\` must remain unset.
+
+No built-in model provider is selected. Set \`D0L_PROVIDER_API_KEY\` in the
+owner-readable \`.env\`, then use \`qm local bootstrap\` with the protected local
+\`ADMIN_GRANTS\` secret to register a provider. Use \`qm local verify\` to exercise
+the Web text API directly; neither command is a Portal browser login or an agent
+execute path. Keep the generated \`PORTAL_SESSION_SECRET\` in \`.env\` across
+non-purge down/up cycles.
+`;
+
 export const dockerScaffold: ProviderScaffold = {
   renderConfig: (orgId, modelProvider) =>
     renderConfig(orgId, {
       target: "docker",
       modelProvider,
-      publicUrl: "http://localhost:8082",
-      providerFields: "",
-      services: ["core", "web-ui"],
-      env: `{ "core": { "HARNESS": "pi" } }`,
-      secretEnv: "",
+      publicUrl: "http://127.0.0.1:8081",
+      providerFields: `
+  // D0-L uses host-only bootstrap; browser login/admin is out of scope.
+  "postgresImage": ${JSON.stringify(D0_LOCAL_POSTGRES_IMAGE)},
+`,
+      services: ["core", "web-ui", "admin", "portal"],
+      env: `{
+    "core": {
+      "HARNESS": "pi",
+      "NODE_ENV": "production",
+      "TEXT_ONLY_MODE": "true",
+      "MEMORY_RECALL": "off",
+      "MEMORY_CAPTURE": "off"
+    },
+    "portal": { "NODE_ENV": "development" }
+  }`,
+      secretEnv: `,
+
+  // The protected local admin grant used by the host-only bootstrap.
+  "secretEnv": { "core": { "ADMIN_GRANTS": "ADMIN_GRANTS" } }`,
       sandbox: `,
 
-  // The Fly app agents execute in. The core boots the immutable sandbox image
-  // recorded by \`qm sandbox publish\`.
-  "sandbox": { "app": ${JSON.stringify(`${orgId}-sandboxes`)} }`,
+  // D0-L has no executable agent sandbox.
+  "sandbox": { "backend": "disabled" }`,
     }),
   ignores: [".env", "node_modules/", ".generated/"],
-  agentsAppendix: "",
+  agentsAppendix: DOCKER_AGENTS_APPENDIX,
   files: noFiles,
-  configurationHint: "docker: confirm the local public port and Fly sandbox app before setup",
+  configurationHint:
+    "D0-L local Docker: Portal is http://127.0.0.1:8081 for health only; use the host bootstrap and Web :8082 verifier, never browser login/admin",
   finalCommand: "npm exec qm -- up",
-  finalWhy: "pull images, start services, print URLs",
+  finalWhy: "pull images, start the local D0-L control plane, and print loopback URLs",
 };
 
 export const flyScaffold: ProviderScaffold = {
