@@ -141,6 +141,12 @@ export interface RemoteBindingStore {
   createBinding(input: CreateBindingInput): Promise<RemoteRuntimeBinding>;
   getBinding(bindingId: string): Promise<RemoteRuntimeBinding | null>;
   setEnabled(bindingId: string, enabled: boolean, actor: string): Promise<{ version: number }>;
+  setEnabledOn(
+    client: import("pg").PoolClient,
+    bindingId: string,
+    enabled: boolean,
+    actor: string,
+  ): Promise<{ version: number }>;
   listBindings(): Promise<RemoteRuntimeBinding[]>;
   close(): Promise<void>;
 }
@@ -189,11 +195,35 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
   }
 
   async function setEnabled(bindingId: string, enabled: boolean, actor: string): Promise<{ version: number }> {
+    const pool = await db.pool();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await setEnabledOn(client, bindingId, enabled, actor);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function setEnabledOn(
+    client: import("pg").PoolClient,
+    bindingId: string,
+    enabled: boolean,
+    actor: string,
+  ): Promise<{ version: number }> {
     const now = Date.now();
-    const current = await db.q("SELECT version FROM remote_runtime_binding WHERE id=$1", [bindingId]);
+    const { rows: current } = await client.query<{ version: number }>(
+      "SELECT version FROM remote_runtime_binding WHERE id=$1",
+      [bindingId],
+    );
     if (!current[0]) throw new Error(`remote binding ${bindingId} does not exist`);
     const expected = Number(current[0].version);
-    const rows: Rows = await db.q(
+    const { rows } = await client.query<{ version: number }>(
       `UPDATE remote_runtime_binding SET version=version+1, enabled=$2,
          disabled_by=$3, disabled_at=$4
        WHERE id=$1 AND version=$5
@@ -213,5 +243,5 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
     await db.close();
   }
 
-  return { createBinding, getBinding, setEnabled, listBindings, close };
+  return { createBinding, getBinding, setEnabled, setEnabledOn, listBindings, close };
 }

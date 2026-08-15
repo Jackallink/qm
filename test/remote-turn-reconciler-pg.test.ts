@@ -15,6 +15,7 @@ import {
 import { createRemoteBindingStore, type CreateBindingInput, type KeySetEntry } from "../src/remote-turn/binding-store.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createRemoteTurnReconciler, type AttestorGateway, type SandboxState } from "../src/remote-turn/reconciler.ts";
+import { createErrorLog } from "../src/admin/error-log.ts";
 import type { TurnResult } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -439,6 +440,8 @@ test("reconciliation emits a 24h operator alert without auto-charging or releasi
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL! });
   try {
+    const { rows } = await p.query("SELECT parked_at FROM remote_turn WHERE id=$1", [prepared.remoteTurnId]);
+    assert.ok(rows[0].parked_at !== null, "parked_at must be stamped by the park transition, not by the test");
     await p.query("UPDATE remote_turn SET parked_at=$1 WHERE id=$2", [Date.now() - 25 * 60 * 60 * 1000, prepared.remoteTurnId]);
   } finally {
     await p.end();
@@ -449,10 +452,14 @@ test("reconciliation emits a 24h operator alert without auto-charging or releasi
       return { exists: true, running: true, startProofSeen: true, terminationSeen: false };
     },
   };
-  const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
+  const errors = createErrorLog();
+  const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway, errors });
   const result = await reconciler.sweep();
   assert.equal(result.reconciled, 0);
   assert.equal(result.alerts.length, 1, "a parked turn older than 24h must alert");
+  const events = await errors.list();
+  assert.equal(events.length, 1, "the alert must be recorded durably in the error log");
+  assert.equal(events[0]!.code, "remote_turn_parked_long");
 
   const p2 = new pg.Pool({ connectionString: URL! });
   try {
@@ -488,5 +495,276 @@ test("concurrent reconciliation CAS lets only one sweeper win", { skip }, async 
     assert.equal(rows[0].status, "failed");
   } finally {
     await p.end();
+  }
+});
+
+test("reconciliation moves a parked turn to completed when the sandbox ran and a reply is stored", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const receipt = await makeEdKeys("receipt-1");
+  const bindingId = `binding-${randomUUID()}`;
+  const scopeId = `scope-${randomUUID()}`;
+  const bindings = createRemoteBindingStore(URL!);
+  await bindings.createBinding({
+    ...bindingBase,
+    bindingId,
+    allowedScopeId: scopeId,
+    attestorKeys: attestor.keySet,
+    receiptKeys: receipt.keySet,
+  });
+  const runStore = createPostgresRunStore(URL!);
+  const store = createRemoteTurnStore(URL!, {
+    runs: runStore.runs,
+    abortKey: { kid: "abort-1", privateKeyPem: attestor.privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const input = admitInput(bindingId, scopeId);
+  const admitted = await store.admit(input);
+  assert.equal(admitted.status, "admitted");
+  assert.ok(admitted.status === "admitted");
+  const enc = envelope();
+  const turnJtiHash = createHash("sha256").update(enc.turnJti).digest("hex");
+  const nonceHash = createHash("sha256").update(enc.attestationNonce).digest("hex");
+  const dispatched = await store.prepareDispatch({
+    remoteTurnId: admitted.remoteTurnId,
+    leaseToken: admitted.runLeaseToken,
+    envelope: enc,
+  });
+  assert.equal(dispatched.ok, true);
+  const versionRow = await (async () => {
+    const pg = (await import("pg")).default;
+    const p = new pg.Pool({ connectionString: URL! });
+    try {
+      const { rows } = await p.query("SELECT version FROM remote_turn WHERE id=$1", [admitted.remoteTurnId]);
+      return Number(rows[0].version);
+    } finally {
+      await p.end();
+    }
+  })();
+  const claimed = await store.claim({
+    remoteTurnId: admitted.remoteTurnId,
+    turnJtiHash,
+    attestationNonceHash: nonceHash,
+    verifiedPreClaim: validPreClaim(admitted.remoteTurnId, turnJtiHash, nonceHash),
+    runtimeAudience: "urn:qm:v1:runtime:org-acme:rt",
+    version: versionRow,
+  });
+  assert.ok(claimed.ok);
+  const run = await runStore.runs.claimRemoteOnce(admitted.coreRunId, admitted.runLeaseToken, "dispatch-worker", 60_000);
+  assert.ok(run);
+
+  const startProof = await attestor.sign({
+    artifact: "start_proof",
+    schemaVersion: 1,
+    remoteTurnId: admitted.remoteTurnId,
+    bindingVersion: 1,
+    turnJtiHash,
+    executionLeaseHash: claimed.ok ? claimed.executionLeaseHash : "e".repeat(64),
+    sandboxId: "sbx-1",
+    workloadIdentity: "wl-1",
+    releaseDigest: "a".repeat(64),
+    networkPolicyId: "np-1",
+    egressTokenId: "eg-1",
+    startTime: Math.floor(Date.now() / 1000),
+    attestorKid: "attestor-1",
+  });
+  const started = await store.startExecution({ remoteTurnId: admitted.remoteTurnId, startProofJws: startProof });
+  assert.equal(started.ok, true);
+
+  const receiptToken = await receipt.sign({
+    artifact: "receipt",
+    schemaVersion: 1,
+    remoteTurnId: admitted.remoteTurnId,
+    bindingVersion: 1,
+    executionLeaseHash: claimed.ok ? claimed.executionLeaseHash : "e".repeat(64),
+    inputDigest: createHash("sha256").update(input.text).digest("hex"),
+    releaseDigest: "a".repeat(64),
+    status: "completed",
+    reply: "final answer",
+    outputBytes: 12,
+    runtimeMs: 30,
+    receivedAt: Math.floor(Date.now() / 1000),
+  });
+  const received = await store.receiveReceipt({ remoteTurnId: admitted.remoteTurnId, receiptToken });
+  assert.equal(received.ok, true);
+
+  const teardown = await store.beginTeardown({
+    remoteTurnId: admitted.remoteTurnId,
+    trustedUsageUsd: null,
+    invalidMetering: true,
+  });
+  assert.equal(teardown, "parked", "invalid metering parks the turn with the reply still stored");
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: true, running: false, startProofSeen: true, terminationSeen: false };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 1);
+  assert.equal(result.alerts.length, 0);
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status, reply, reconciliation_evidence_ref FROM remote_turn WHERE id=$1", [
+      admitted.remoteTurnId,
+    ]);
+    assert.equal(rows[0].status, "completed", "a ran-and-replied parked turn must reconcile to completed");
+    assert.equal(rows[0].reply, "final answer", "the stored reply must be preserved through reconciliation");
+    assert.match(rows[0].reconciliation_evidence_ref ?? "", /^[a-f0-9]{64}$/);
+    const { rows: runRows } = await p.query("SELECT status, result FROM runs WHERE id=$1", [admitted.coreRunId]);
+    assert.equal(runRows[0].status, "done");
+    const resultJson = JSON.parse(runRows[0].result);
+    assert.equal(resultJson.reply, "final answer", "the run result must carry the reconciled reply");
+  } finally {
+    await p.end();
+  }
+});
+
+test("reconciliation moves a parked turn to cancelled when the attestor reports termination", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  await parkTurn(prepared, attestor);
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: true, running: false, startProofSeen: true, terminationSeen: true };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 1);
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [prepared.remoteTurnId]);
+    assert.equal(rows[0].status, "cancelled");
+    const { rows: runRows } = await p.query("SELECT status FROM runs WHERE id=$1", [prepared.coreRunId]);
+    assert.equal(runRows[0].status, "failed");
+  } finally {
+    await p.end();
+  }
+  assert.equal(prepared.terminalEvents.length, 1, "onTerminal must fire for the cancelled run");
+});
+
+test("reconcile never issues a second execution lease", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  await parkTurn(prepared, attestor);
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
+  await reconciler.sweep();
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT execution_lease_hash FROM remote_turn WHERE id=$1", [
+      prepared.remoteTurnId,
+    ]);
+    const existingLease = rows[0].execution_lease_hash;
+    const claim = await prepared.store.claim({
+      remoteTurnId: prepared.remoteTurnId,
+      turnJtiHash: "a".repeat(64),
+      attestationNonceHash: "b".repeat(64),
+      verifiedPreClaim: validPreClaim(prepared.remoteTurnId, "a".repeat(64), "b".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org-acme:rt",
+      version: 999,
+    });
+    assert.equal(claim.ok, false, "a terminal reconciled turn must never hand out another lease");
+    assert.equal(rows[0].execution_lease_hash, existingLease);
+  } finally {
+    await p.end();
+  }
+});
+
+test("abort on a pre-dispatch state returns a typed refusal instead of throwing", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const bindingId = `binding-${randomUUID()}`;
+  const scopeId = `scope-${randomUUID()}`;
+  const bindings = createRemoteBindingStore(URL!);
+  await bindings.createBinding({ ...bindingBase, bindingId, allowedScopeId: scopeId, attestorKeys: attestor.keySet });
+  const runStore = createPostgresRunStore(URL!);
+  const store = createRemoteTurnStore(URL!, {
+    runs: runStore.runs,
+    abortKey: { kid: "abort-1", privateKeyPem: attestor.privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const input = admitInput(bindingId, scopeId);
+  const admitted = await store.admit(input);
+  assert.equal(admitted.status, "admitted");
+  assert.ok(admitted.status === "admitted");
+
+  const aborted = await store.abort({ remoteTurnId: admitted.remoteTurnId, actor: "actor-1" });
+  assert.equal(aborted.ok, false, "abort before dispatch must not succeed");
+  assert.ok(!aborted.ok && aborted.reason === "not_abortable");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status, abort_requested_at FROM remote_turn WHERE id=$1", [
+      admitted.remoteTurnId,
+    ]);
+    assert.equal(rows[0].status, "admitted", "the turn must stay admitted");
+    assert.ok(rows[0].abort_requested_at !== null, "abort intent must still be recorded");
+  } finally {
+    await p.end();
+  }
+});
+
+test("reconciler sweeps expired dispatching turns to failed_pre_dispatch", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const bindingId = `binding-${randomUUID()}`;
+  const scopeId = `scope-${randomUUID()}`;
+  const bindings = createRemoteBindingStore(URL!);
+  await bindings.createBinding({ ...bindingBase, bindingId, allowedScopeId: scopeId, attestorKeys: attestor.keySet });
+  const runStore = createPostgresRunStore(URL!);
+  const store = createRemoteTurnStore(URL!, {
+    runs: runStore.runs,
+    abortKey: { kid: "abort-1", privateKeyPem: attestor.privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const input = admitInput(bindingId, scopeId);
+  const admitted = await store.admit(input);
+  assert.equal(admitted.status, "admitted");
+  assert.ok(admitted.status === "admitted");
+  const dispatched = await store.prepareDispatch({
+    remoteTurnId: admitted.remoteTurnId,
+    leaseToken: admitted.runLeaseToken,
+    envelope: envelope(),
+  });
+  assert.equal(dispatched.ok, true);
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    await p.query("UPDATE remote_turn SET pre_claim_expires_at=$1 WHERE id=$2", [
+      Math.floor(Date.now() / 1000) - 10,
+      admitted.remoteTurnId,
+    ]);
+  } finally {
+    await p.end();
+  }
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 1, "the expired dispatching turn must be reconciled");
+
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p2.query("SELECT status FROM remote_turn WHERE id=$1", [admitted.remoteTurnId]);
+    assert.equal(rows[0].status, "failed_pre_dispatch");
+    const { rows: runRows } = await p2.query("SELECT status FROM runs WHERE id=$1", [admitted.coreRunId]);
+    assert.equal(runRows[0].status, "failed");
+  } finally {
+    await p2.end();
   }
 });
