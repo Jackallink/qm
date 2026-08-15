@@ -95,3 +95,78 @@ export function createPgPool(connectionString: string, statements: string[]): Pg
   }
   return { pool, q, query, schema: applySchema, close };
 }
+
+interface SharedPoolEntry {
+  pool: PgPool;
+  refs: number;
+  applied: Set<string>;
+  pending: string[];
+  shared: PgPool | undefined;
+}
+
+const sharedPools = new Map<string, SharedPoolEntry>();
+
+async function drainPending(entry: {
+  pool: PgPool;
+  applied: Set<string>;
+  pending: string[];
+}): Promise<void> {
+  if (entry.pending.length === 0) return;
+  const pending = entry.pending.splice(0);
+  const unseen = pending.filter((s) => !entry.applied.has(s));
+  if (unseen.length === 0) return;
+  const p = await entry.pool.pool();
+  await applyDdl(p, unseen);
+  for (const stmt of unseen) entry.applied.add(stmt);
+}
+
+export function sharedPgPool(connectionString: string, statements: string[]): PgPool {
+  let entry = sharedPools.get(connectionString);
+  if (!entry) {
+    const pool = createPgPool(connectionString, []);
+    const state: SharedPoolEntry = {
+      pool,
+      refs: 0,
+      applied: new Set<string>(),
+      pending: [],
+      shared: undefined,
+    };
+    state.shared = {
+      async pool(): Promise<Pool> {
+        await drainPending(state);
+        return await state.pool.pool();
+      },
+      async q(text: string, params: unknown[] = []): Promise<Rows> {
+        await drainPending(state);
+        return await state.pool.q(text, params);
+      },
+      async query(text: string, params: unknown[] = []): Promise<{ rows: Rows; rowCount: number }> {
+        await drainPending(state);
+        return await state.pool.query(text, params);
+      },
+      async schema(schemaSql: string): Promise<void> {
+        const stmt = schemaSql.trim();
+        assertOneStatement(stmt);
+        await drainPending(state);
+        await state.pool.schema?.(stmt);
+      },
+      async close(): Promise<void> {
+        state.refs -= 1;
+        if (state.refs <= 0) {
+          sharedPools.delete(connectionString);
+          await state.pool.close();
+        }
+      },
+    };
+    sharedPools.set(connectionString, state);
+    entry = state;
+  }
+  for (const stmt of statements) {
+    if (!entry.applied.has(stmt.trim()) && !entry.pending.includes(stmt.trim())) {
+      entry.pending.push(stmt.trim());
+    }
+  }
+  entry.refs += 1;
+  return entry.shared!;
+}
+
