@@ -75,6 +75,8 @@ export const REMOTE_TURN_DDL = `CREATE TABLE IF NOT EXISTS remote_turn(
   updated_at BIGINT NOT NULL
 )`;
 
+export const REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS receipt_key_snapshot JSONB`;
+
 export const REMOTE_TURN_ADMISSION_KEY_PARTIAL_UNIQUE_INDEX_DDL = `CREATE UNIQUE INDEX IF NOT EXISTS remote_turn_admission_key_active
   ON remote_turn(admission_key)
   WHERE status NOT IN ('completed','rejected','failed_pre_dispatch','failed','cancelled','parked')`;
@@ -120,6 +122,7 @@ export const REMOTE_TURN_RUN_DDL = [
 export const REMOTE_TURN_DDL_ALL = [
   REMOTE_RUNTIME_BINDING_DDL,
   REMOTE_TURN_DDL,
+  REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL,
   REMOTE_TURN_ADMISSION_KEY_PARTIAL_UNIQUE_INDEX_DDL,
   REMOTE_TURN_EVENTS_DDL,
 ] as const;
