@@ -192,7 +192,7 @@ export interface RemoteTurnStore {
   listCancelRequested(): Promise<CancelRequestedRecord[]>;
   listExpiredDispatching(now: number): Promise<ExpiredDispatchingRecord[]>;
   listOrphanRuns(): Promise<OrphanRunRecord[]>;
-  failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<void>;
+  failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<boolean>;
   reconcile(input: { remoteTurnId: string; outcome: ReconcileOutcome; evidenceDigest: string }): Promise<ReconcileResult>;
   readAuditChain(scopeId: string, operatorId: string): Promise<RemoteTurnAuditReadResult>;
   close(): Promise<void>;
@@ -257,7 +257,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
   async function recordDenial(remoteTurnId: string, reason: RefusalReason): Promise<void> {
     await pool.q(
-      "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1, 1, 'refused', $2, $3)",
+      "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1, 1, 'refused', $2, $3) ON CONFLICT (remote_turn_id, seq) DO NOTHING",
       [remoteTurnId, JSON.stringify({ reason }), now()],
     );
   }
@@ -1073,12 +1073,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     }));
   }
 
-  async function failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<void> {
-    if (!leaseToken) return;
+  async function failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<boolean> {
+    if (!leaseToken) return false;
     await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       await runs.failOn(client, coreRunId, leaseToken, `orphaned remote_once run without an admission`);
     });
+    return true;
   }
 
   async function listExpiredDispatching(_nowMs: number): Promise<ExpiredDispatchingRecord[]> {

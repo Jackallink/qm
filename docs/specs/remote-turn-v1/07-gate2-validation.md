@@ -23,7 +23,7 @@ Gate 2（上游通用扩展）实现完成，red-test-first；本记录为验证
 
 ## 执行验证
 
-- 全部 remote-turn pg 套件：122/122 pass（`--test-concurrency=1`，真实 Postgres）。
+- 全部 remote-turn pg 套件（含 run-store-remote-once、persistence-pool-registry）：125/125 pass（`--test-concurrency=1`，真实 Postgres）。
 - 更广 pg 套件（run/session/audit/budget/replay/registry）：79/79 pass。
 - `npm run typecheck`：clean。
 - `git diff --check`：clean。

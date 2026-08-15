@@ -101,8 +101,8 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
       if (result.ok && result.status === "cancelled") reconciled += 1;
     }
     for (const orphan of await opts.store.listOrphanRuns()) {
-      await opts.store.failOrphanRun(orphan.coreRunId, orphan.leaseToken);
-      reconciled += 1;
+      const failed = await opts.store.failOrphanRun(orphan.coreRunId, orphan.leaseToken);
+      if (failed) reconciled += 1;
     }
     return { reconciled, alerts };
   }

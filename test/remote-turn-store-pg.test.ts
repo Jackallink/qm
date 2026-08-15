@@ -278,6 +278,38 @@ test("duplicate coreRunId is refused with a clean typed result, not a raw error"
   assert.equal(second.status, "refused");
 });
 
+test("retried admission after a prior refusal stays idempotent instead of a seq collision", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const coreRunId = randomUUID();
+  const g0Bad = g0(scopeId, `conv-${randomUUID()}`, { governanceDecisionId: "" });
+  const refused = await store.admit(
+    admitInput({ bindingId, scopeId, coreRunId, g0: g0Bad, threadRef: `web:actor-1:thread-${randomUUID()}` }),
+  );
+  assert.equal(refused.status, "refused");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const count = async (): Promise<number> =>
+      Number(
+        (
+          await p.query("SELECT count(*) AS n FROM remote_turn_events WHERE remote_turn_id=$1 AND event_type='refused'", [
+            coreRunId,
+          ])
+        ).rows[0].n,
+      );
+    assert.equal(await count(), 1);
+    const retry = await store.admit(
+      admitInput({ bindingId, scopeId, coreRunId, threadRef: `web:actor-1:thread-${randomUUID()}` }),
+    );
+    assert.equal(retry.status, "refused");
+    assert.equal(retry.reason, "remote_run_exists");
+    assert.equal(await count(), 1, "repeat denial must not add a second event row");
+  } finally {
+    await p.end();
+  }
+});
+
 for (const label of ["session-bound", "remote-turn-insert", "reservation+audit", "pre-commit"] as const) {
   test(`crash at onStep '${label}' leaves no in-transaction artifacts`, { skip }, async () => {
     const { bindingId, scopeId } = await freshBinding();
