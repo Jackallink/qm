@@ -60,7 +60,9 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
   async function reconcileSweep(): Promise<{ reconciled: number; alerts: string[] }> {
     const nowMs = clock();
     const parked: ParkedTurnRecord[] = await opts.store.listParked();
+    const expiredActive = await opts.store.listExpiredActive();
     const expiredDispatching = await opts.store.listExpiredDispatching(nowMs);
+    const cancelRequested = await opts.store.listCancelRequested();
     let reconciled = 0;
     const alerts: string[] = [];
     for (const turn of parked) {
@@ -84,9 +86,23 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
       });
       if (result.ok && result.outcome === outcome) reconciled += 1;
     }
+    for (const turn of expiredActive) {
+      const expired = await opts.store.expireActiveTurn(turn.remoteTurnId);
+      if (expired) reconciled += 1;
+    }
     for (const turn of expiredDispatching) {
       const result = await opts.store.expirePreClaim(turn.remoteTurnId, nowMs);
       if (result === "expired") reconciled += 1;
+    }
+    for (const turn of cancelRequested) {
+      const state = await opts.attestor.querySandboxState(turn.remoteTurnId);
+      if (!state.terminationSeen) continue;
+      const result = await opts.store.terminateTurn({ remoteTurnId: turn.remoteTurnId, actor: "remote-turn-reconciler" });
+      if (result.ok && result.status === "cancelled") reconciled += 1;
+    }
+    for (const orphan of await opts.store.listOrphanRuns()) {
+      await opts.store.failOrphanRun(orphan.coreRunId, orphan.leaseToken);
+      reconciled += 1;
     }
     return { reconciled, alerts };
   }

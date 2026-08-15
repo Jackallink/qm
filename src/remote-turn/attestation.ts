@@ -87,7 +87,7 @@ function matches(value: string, pattern: string): boolean {
 function isHttpUri(value: string): boolean {
   try {
     const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname);
   } catch {
     return false;
   }

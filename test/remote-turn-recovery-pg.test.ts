@@ -20,6 +20,36 @@ import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Remote Turn recovery tests";
 
+async function seedTurnRow(
+  p: import("pg").Pool,
+  turnId: string,
+  coreRunId: string,
+  admissionKey: string,
+  convKey: string,
+  scopeId: string,
+  actorId: string,
+  bindingId: string,
+  bindingVersion: number,
+  preAdmissionExpiresAt: number,
+  createdAt: number,
+): Promise<void> {
+  const sessionId = `session-${turnId}`;
+  await p.query(
+    "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at) VALUES($1,'dm',$2,$3,$4) ON CONFLICT (id) DO NOTHING",
+    [sessionId, scopeId, `thread-${turnId}`, createdAt],
+  );
+  await p.query(
+    "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, created_at) VALUES($1,$2,'pending','{}',0,3,'remote_once',$3) ON CONFLICT (id) DO NOTHING",
+    [coreRunId, sessionId, createdAt],
+  );
+  await p.query(
+    `INSERT INTO remote_turn(id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
+      binding_id, binding_version, status, version, pre_admission_expires_at, created_at, updated_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,'created',1,$9,$10,$10)`,
+    [turnId, coreRunId, admissionKey, convKey, scopeId, actorId, bindingId, bindingVersion, preAdmissionExpiresAt, createdAt],
+  );
+}
+
 before(async () => {
   if (!URL) return;
   const pg = (await import("pg")).default;
@@ -381,19 +411,12 @@ test("admission_key partial unique index permits an identical re-send after a te
   };
   const p2 = new pg.Pool({ connectionString: URL! });
   try {
-    await p2.query(
-      `INSERT INTO remote_turn(id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
-        binding_id, binding_version, status, version, pre_admission_expires_at, created_at, updated_at)
-       VALUES($1,$2,$3,'conv-x','scope-x','actor-1','binding-x',1,'created',1,$4,$5,$5)`,
-      [second.id, second.coreRunId, second.admissionKey, second.preAdmissionExpiresAt, nowSec],
-    );
+    await seedTurnRow(p2, second.id, second.coreRunId, second.admissionKey, "conv-x", "scope-x", "actor-1", "binding-x", 1, second.preAdmissionExpiresAt, nowSec);
     await assert.rejects(
-      p2.query(
-        `INSERT INTO remote_turn(id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
-          binding_id, binding_version, status, version, pre_admission_expires_at, created_at, updated_at)
-         VALUES($1,$2,$3,'conv-y','scope-y','actor-1','binding-y',1,'created',1,$4,$5,$5)`,
-        [randomUUID(), randomUUID(), second.admissionKey, nowSec + 300, nowSec],
-      ),
+      (async () => {
+        const dupId = randomUUID();
+        await seedTurnRow(p2, dupId, randomUUID(), second.admissionKey, "conv-y", "scope-y", "actor-1", "binding-y", 1, nowSec + 300, nowSec);
+      })(),
       /duplicate key|unique/i,
       "an active row with the same admission_key must be rejected",
     );

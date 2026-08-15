@@ -77,6 +77,10 @@ export const REMOTE_TURN_DDL = `CREATE TABLE IF NOT EXISTS remote_turn(
 
 export const REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS receipt_key_snapshot JSONB`;
 
+export const REMOTE_TURN_CORE_RUN_FK_DDL = `DO $fk$ BEGIN IF to_regclass('runs') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_core_run_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_core_run_fk FOREIGN KEY (core_run_id) REFERENCES runs(id) ON DELETE RESTRICT; END IF; END $fk$`;
+
+export const REMOTE_TURN_SESSION_FK_DDL = `DO $fk$ BEGIN IF to_regclass('sessions') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_session_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_session_fk FOREIGN KEY (qm_session_id) REFERENCES sessions(id) ON DELETE RESTRICT; END IF; END $fk$`;
+
 export const REMOTE_TURN_ADMISSION_KEY_PARTIAL_UNIQUE_INDEX_DDL = `CREATE UNIQUE INDEX IF NOT EXISTS remote_turn_admission_key_active
   ON remote_turn(admission_key)
   WHERE status NOT IN ('completed','rejected','failed_pre_dispatch','failed','cancelled','parked')`;
@@ -131,6 +135,8 @@ export const REMOTE_TURN_DDL_ALL = [
   REMOTE_RUNTIME_BINDING_DDL,
   REMOTE_TURN_DDL,
   REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL,
+  REMOTE_TURN_CORE_RUN_FK_DDL,
+  REMOTE_TURN_SESSION_FK_DDL,
   REMOTE_TURN_ADMISSION_KEY_PARTIAL_UNIQUE_INDEX_DDL,
   REMOTE_TURN_EVENTS_DDL,
   REMOTE_TURN_AUDIT_READS_DDL,

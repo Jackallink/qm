@@ -83,6 +83,37 @@ async function seedTurn(store: ReturnType<typeof createRemoteTurnStore>, scopeId
   return result.status === "admitted" ? result.remoteTurnId : "";
 }
 
+test("refused admission records a durable denial event keyed by the run id", { skip }, async () => {
+  const authorized: Array<[string, string]> = [["scope-a", "operator-a"]];
+  const store = createRemoteTurnStore(URL!, {
+    authorizedOperators: async (scopeId, operatorId) =>
+      authorized.some(([s, o]) => s === scopeId && o === operatorId),
+  });
+  const bindings = createRemoteBindingStore(URL!);
+  const bindingId = `binding-deny-${randomUUID()}`;
+  await bindings.createBinding({ ...bindingInput, bindingId, allowedScopeId: "scope-a" });
+  const input = admitInput("scope-a", bindingId);
+  const denied = await store.admit({
+    ...input,
+    g0: { ...input.g0, actorId: "actor-other" },
+  });
+  assert.equal(denied.status, "refused");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const denial = await p.query(
+      "SELECT payload FROM remote_turn_events WHERE remote_turn_id=$1 AND event_type='refused'",
+      [input.coreRunId],
+    );
+    assert.equal(denial.rows.length, 1, "the refused admission must leave a durable denial event");
+    const payload = denial.rows[0].payload as Record<string, unknown>;
+    assert.equal(payload.reason, "governance_authorization_required");
+  } finally {
+    await p.end();
+  }
+});
+
 test("authorized operator reads only its own scope chain; cross-scope gets not_found with no ID leak and records denied read", { skip }, async () => {
   const authorized: Array<[string, string]> = [["scope-a", "operator-a"]];
   const store = createRemoteTurnStore(URL!, {

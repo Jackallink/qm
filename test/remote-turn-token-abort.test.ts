@@ -355,13 +355,23 @@ function validPreClaim(remoteTurnId: string, turnJtiHash: string, nonceHash: str
 
 async function seedDispatchingTurn(p: import("pg").Pool, turnJtiHash: string, nonceHash: string): Promise<string> {
   const remoteTurnId = randomUUID();
+  const coreRunId = `run-claim-${remoteTurnId}`;
+  const sessionId = `session-claim-${remoteTurnId}`;
+  await p.query(
+    "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at) VALUES($1,'dm',$2,$3,$4) ON CONFLICT (id) DO NOTHING",
+    [sessionId, "scope-1", `thread-claim-${remoteTurnId}`, 1_800_000_000],
+  );
+  await p.query(
+    "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at) VALUES($1,$2,'running','{}',1,3,'remote_once',$3,$4,$5) ON CONFLICT (id) DO NOTHING",
+    [coreRunId, sessionId, randomUUID(), 1_800_000_000 + 60_000, 1_800_000_000],
+  );
   await p.query(
     `INSERT INTO remote_turn(
       id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
       binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
       created_at, updated_at
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
-    [remoteTurnId, `run-claim-${remoteTurnId}`, `key-claim-${remoteTurnId}`, "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+    [remoteTurnId, coreRunId, `key-claim-${remoteTurnId}`, "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
   );
   return remoteTurnId;
 }
@@ -440,6 +450,16 @@ test("claim on an admitted turn writes next-seq events without colliding with ad
     const remoteTurnId = "admit-flow-" + randomUUID();
     const turnJtiHash = "f".repeat(64);
     const nonceHash = "e".repeat(64);
+    const coreRunId = `run-flow-${remoteTurnId}`;
+    const sessionId = `session-flow-${remoteTurnId}`;
+    await p.query(
+      "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at) VALUES($1,'dm',$2,$3,$4) ON CONFLICT (id) DO NOTHING",
+      [sessionId, "scope-1", `thread-flow-${remoteTurnId}`, 1_800_000_000],
+    );
+    await p.query(
+      "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at) VALUES($1,$2,'running','{}',1,3,'remote_once',$3,$4,$5) ON CONFLICT (id) DO NOTHING",
+      [coreRunId, sessionId, randomUUID(), 1_800_000_000 + 60_000, 1_800_000_000],
+    );
     await p.query(
       `INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,1,$2,$3,$4),($1,2,$2,$3,$4)`,
       [remoteTurnId, "session_bind", JSON.stringify({}), 1_800_000_000],
@@ -450,7 +470,7 @@ test("claim on an admitted turn writes next-seq events without colliding with ad
         binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
         created_at, updated_at
       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
-      [remoteTurnId, "run-flow", "key-flow", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+      [remoteTurnId, coreRunId, "key-flow", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
     );
     const verified = validPreClaim(remoteTurnId, turnJtiHash, nonceHash);
     const result = await store.claim({

@@ -332,6 +332,44 @@ test("abort during dispatching revokes JTI and refuses a later claim", { skip },
   });
   assert.equal(claim.ok, false, "the pending claim must be refused after abort");
   assert.ok(!claim.ok && claim.reason === "no_lease");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const lease = await p.query("SELECT * FROM session_leases WHERE holder=$1", [
+      `remote_turn:${admitted.remoteTurnId}`,
+    ]);
+    assert.equal(lease.rows.length, 1, "abort must HOLD the session lease until termination proof");
+    const reservation = await p.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [
+      admitted.remoteTurnId,
+    ]);
+    assert.equal(reservation.rows[0].status, "reserved", "abort must HOLD the budget reservation until termination proof");
+    const run = await p.query("SELECT status FROM runs WHERE id=$1", [admitted.coreRunId]);
+    assert.notEqual(run.rows[0].status, "failed", "abort must leave the run unfailed until termination proof");
+  } finally {
+    await p.end();
+  }
+
+  const terminated = await store.terminateTurn({ remoteTurnId: admitted.remoteTurnId, actor: "attestor-ctl" });
+  assert.equal(terminated.ok, true);
+  assert.ok(terminated.ok && terminated.status === "cancelled");
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    const lease = await p2.query("SELECT * FROM session_leases WHERE holder=$1", [
+      `remote_turn:${admitted.remoteTurnId}`,
+    ]);
+    assert.equal(lease.rows.length, 0, "termination proof must release the session lease");
+    const reservation = await p2.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [
+      admitted.remoteTurnId,
+    ]);
+    assert.equal(reservation.rows[0].status, "released", "termination proof must settle the reservation");
+    const run = await p2.query("SELECT status FROM runs WHERE id=$1", [admitted.coreRunId]);
+    assert.equal(run.rows[0].status, "failed", "termination proof must fail the run");
+    const turn = await p2.query("SELECT status FROM remote_turn WHERE id=$1", [admitted.remoteTurnId]);
+    assert.equal(turn.rows[0].status, "cancelled");
+  } finally {
+    await p2.end();
+  }
 });
 
 test("disable enumerates active turns and parks or cancels each target with typed results", { skip }, async () => {
@@ -767,4 +805,73 @@ test("reconciler sweeps expired dispatching turns to failed_pre_dispatch", { ski
   } finally {
     await p2.end();
   }
+});
+
+test("runtime ceiling sweep times out a claimed turn into cancel_requested and terminates it on proof", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    await p.query("UPDATE remote_turn SET claim_expires_at=$1 WHERE id=$2", [
+      Math.floor(Date.now() / 1000) - 10,
+      remoteTurnId,
+    ]);
+  } finally {
+    await p.end();
+  }
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: true, running: true, startProofSeen: true, terminationSeen: false };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 1, "the claimed turn past its ceiling must be reconciled");
+
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p2.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "cancel_requested", "ceiling timeout must move the turn to cancel_requested");
+    const lease = await p2.query("SELECT * FROM session_leases WHERE holder=$1", [`remote_turn:${remoteTurnId}`]);
+    assert.equal(lease.rows.length, 1, "the session lease must be held while cancellation is pending");
+  } finally {
+    await p2.end();
+  }
+  void attestor;
+});
+
+test("reconciler fails orphaned remote_once runs that never admitted", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  const orphanRunId = `orphan-${randomUUID()}`;
+  try {
+    await p.query(
+      "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at) VALUES($1,$2,'running','{}',1,3,'remote_once',$3,$4,$5)",
+      [orphanRunId, "session-orphan", randomUUID(), Math.floor(Date.now()) - 1000, Math.floor(Date.now())],
+    );
+  } finally {
+    await p.end();
+  }
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.ok(result.reconciled >= 1, "the orphaned remote_once run must be failed by the sweep");
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p2.query("SELECT status FROM runs WHERE id=$1", [orphanRunId]);
+    assert.equal(rows[0].status, "failed", "the orphaned run must be failed");
+  } finally {
+    await p2.end();
+  }
+  void attestor;
 });

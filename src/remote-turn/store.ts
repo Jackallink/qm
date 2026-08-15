@@ -121,7 +121,7 @@ export interface AbortInput {
 }
 
 export type AbortResult =
-  | { ok: true; status: "cancel_requested" }
+  | { ok: true; status: "cancel_requested" | "cancelled" }
   | { ok: false; reason: "not_found" | "not_abortable" | "already_cancelled" | "parked" };
 
 export type DisableTargetOutcome = "cancelled" | "parked" | "failed";
@@ -154,6 +154,22 @@ export interface ExpiredDispatchingRecord {
   coreRunId: string;
 }
 
+export interface ExpiredActiveRecord {
+  remoteTurnId: string;
+  coreRunId: string;
+  status: string;
+}
+
+export interface CancelRequestedRecord {
+  remoteTurnId: string;
+  coreRunId: string;
+}
+
+export interface OrphanRunRecord {
+  coreRunId: string;
+  leaseToken: string | null;
+}
+
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
   claim(input: ClaimInput): Promise<LeaseResult>;
@@ -168,9 +184,15 @@ export interface RemoteTurnStore {
     evidence: TerminationEvidence;
   }): Promise<"completed" | "parked" | "not_ready">;
   abort(input: AbortInput): Promise<AbortResult>;
+  terminateTurn(input: { remoteTurnId: string; actor: string }): Promise<AbortResult>;
   disable(input: { bindingId: string; actor: string }): Promise<DisableResult>;
   listParked(): Promise<ParkedTurnRecord[]>;
+  listExpiredActive(): Promise<ExpiredActiveRecord[]>;
+  expireActiveTurn(remoteTurnId: string): Promise<boolean>;
+  listCancelRequested(): Promise<CancelRequestedRecord[]>;
   listExpiredDispatching(now: number): Promise<ExpiredDispatchingRecord[]>;
+  listOrphanRuns(): Promise<OrphanRunRecord[]>;
+  failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<void>;
   reconcile(input: { remoteTurnId: string; outcome: ReconcileOutcome; evidenceDigest: string }): Promise<ReconcileResult>;
   readAuditChain(scopeId: string, operatorId: string): Promise<RemoteTurnAuditReadResult>;
   close(): Promise<void>;
@@ -221,11 +243,16 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   const onStep = opts.onStep ?? (() => {});
   const leaseHolder = (remoteTurnId: string): string => `remote_turn:${remoteTurnId}`;
 
-  async function markRunFailed(runId: string): Promise<void> {
-    await pool.q(
-      "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='pending'",
-      [runId, now()],
-    );
+  async function markRunFailed(runId: string, error: string): Promise<void> {
+    await withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query<{ lease_token: string | null }>(
+        "SELECT lease_token FROM runs WHERE id=$1",
+        [runId],
+      );
+      const leaseToken = rows[0]?.lease_token ?? null;
+      if (leaseToken) await runs.failOn(client, runId, leaseToken, error);
+    });
   }
 
   async function recordDenial(remoteTurnId: string, reason: RefusalReason): Promise<void> {
@@ -247,6 +274,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       [input.coreRunId, input.threadRef, JSON.stringify({ text: input.text }), runLeaseToken, t0 + ADMISSION_WINDOW_MS, t0],
     );
     if (runInserted !== 1) {
+      await recordDenial(input.coreRunId, "remote_run_exists");
       return { status: "refused", reason: "remote_run_exists" };
     }
 
@@ -380,7 +408,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     }
 
     if (refusalReason) {
-      await markRunFailed(input.coreRunId);
+      await markRunFailed(input.coreRunId, `remote admission refused: ${refusalReason}`);
       await recordDenial(input.coreRunId, refusalReason);
       return { status: "refused", reason: refusalReason };
     }
@@ -413,7 +441,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       guardClientErrors(client);
       const { rows } = await client.query(
         `UPDATE remote_turn SET status='claimed', execution_lease_hash=$2, workload_identity=$3, planned_sandbox_id=$4,
-           version=version+1, updated_at=$5
+           version=version+1, updated_at=$5, claimed_at=$5,
+           claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) +
+             (SELECT max_runtime_ms / 1000 FROM remote_runtime_binding b
+               JOIN remote_turn t ON t.binding_id = b.id WHERE t.id = $1)
          WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$6 AND abort_requested_at IS NULL AND version=$7 AND binding_version=$8
          RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
         [input.remoteTurnId, executionLeaseHash, verified.intendedWorkloadIdentity, verified.plannedSandboxId, claimedAt, input.turnJtiHash, input.version, verified.bindingVersion],
@@ -543,9 +574,11 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       const turn = rows[0];
       if (!turn) return "not_dispatchable";
       if (turn.status !== "dispatching") return "not_dispatchable";
-      const expiresAt = Number(turn.pre_claim_expires_at);
-      const nowSec = Math.floor(now / 1000);
-      if (nowSec < expiresAt) return "not_expired";
+      const { rows: expired } = await client.query<{ expired: boolean }>(
+        "SELECT (SELECT extract(epoch from transaction_timestamp())) > pre_claim_expires_at AS expired FROM remote_turn WHERE id=$1",
+        [remoteTurnId],
+      );
+      if (!expired[0]?.expired) return "not_expired";
 
       await client.query(
         "UPDATE remote_turn SET status='failed_pre_dispatch', version=version+1, updated_at=$2 WHERE id=$1 AND status='dispatching'",
@@ -568,7 +601,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         [`remote_turn:${remoteTurnId}`],
       );
       const coreRunId = turn.core_run_id as string;
-      await markRunFailedOnClient(client, coreRunId, now);
+      await markRunFailedOnClient(client, coreRunId, `remote turn expired pre-dispatch`);
       return "expired";
     });
   }
@@ -580,9 +613,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         `SELECT id, core_run_id FROM remote_turn
          WHERE status IN ('created','session_bound','admitted')
            AND pre_admission_expires_at IS NOT NULL
-           AND pre_admission_expires_at <= $1
+           AND (SELECT extract(epoch from transaction_timestamp())) >= pre_admission_expires_at
          FOR UPDATE SKIP LOCKED`,
-        [Math.floor(now / 1000)],
       );
       for (const turn of rows) {
         const remoteTurnId = turn.id as string;
@@ -606,23 +638,19 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           "DELETE FROM session_leases WHERE holder=$1",
           [`remote_turn:${remoteTurnId}`],
         );
-        await markRunFailedOnClient(client, coreRunId, now);
+        await markRunFailedOnClient(client, coreRunId, `remote admission deadline expired`);
       }
       return rows.length;
     });
   }
 
-  async function markRunFailedOnClient(client: PoolClient, coreRunId: string, finishedAt: number): Promise<void> {
-    const { rowCount } = await client.query(
-      "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='pending'",
-      [coreRunId, finishedAt],
+  async function markRunFailedOnClient(client: PoolClient, coreRunId: string, error: string): Promise<void> {
+    const { rows } = await client.query<{ lease_token: string | null }>(
+      "SELECT lease_token FROM runs WHERE id=$1",
+      [coreRunId],
     );
-    if (rowCount !== 1) {
-      await client.query(
-        "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='running'",
-        [coreRunId, finishedAt],
-      );
-    }
+    const leaseToken = rows[0]?.lease_token ?? null;
+    if (leaseToken) await runs.failOn(client, coreRunId, leaseToken, error);
   }
 
   async function recordAttestationDenial(remoteTurnId: string): Promise<void> {
@@ -885,8 +913,6 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       [remoteTurnId, abortJtiHash, now(), now()],
     );
     await writeEvent(client, remoteTurnId, event, { actor });
-    await releaseTurnResources(client, remoteTurnId);
-    await failRemoteRunOnClient(client, turn.core_run_id as string, `remote turn aborted by ${actor}`);
     return { ok: true as const, status: "cancel_requested" as const };
   }
 
@@ -910,10 +936,28 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     if (leaseToken) await runs.failOn(client, coreRunId, leaseToken, error);
   }
 
+  async function terminateTurnOnClient(client: PoolClient, remoteTurnId: string, actor: string): Promise<AbortResult> {
+    const turn = await readTurn(client, remoteTurnId);
+    if (!turn || turn.status !== "cancel_requested") return { ok: false as const, reason: "not_abortable" as const };
+    const advanced = await advanceState(client, remoteTurnId, "cancel_requested", "complete");
+    if (!advanced) return { ok: false as const, reason: "not_abortable" as const };
+    await writeEvent(client, remoteTurnId, "complete", { actor, termination: true });
+    await releaseTurnResources(client, remoteTurnId);
+    await failRemoteRunOnClient(client, turn.core_run_id as string, `remote turn cancelled by ${actor}`);
+    return { ok: true as const, status: "cancelled" as const };
+  }
+
   async function abort(input: AbortInput): Promise<AbortResult> {
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       return abortTurnOnClient(client, input.remoteTurnId, input.actor);
+    });
+  }
+
+  async function terminateTurn(input: { remoteTurnId: string; actor: string }): Promise<AbortResult> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      return terminateTurnOnClient(client, input.remoteTurnId, input.actor);
     });
   }
 
@@ -945,13 +989,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         const status = await readTurn(client, row.id);
         const turnStatus = status ? (status.status as RemoteTurnStatus) : null;
         let outcome: DisableTargetOutcome;
-        if (result.ok) {
-          outcome = "cancelled";
-        } else if (turnStatus === "cancelled") {
+        if (turnStatus === "cancelled") {
           outcome = "cancelled";
         } else if (turnStatus === "cancel_requested") {
-          outcome = "cancelled";
+          outcome = "parked";
         } else if (turnStatus === "parked") {
+          outcome = "parked";
+        } else if (result.ok) {
           outcome = "parked";
         } else {
           outcome = "failed";
@@ -975,11 +1019,71 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     }));
   }
 
-  async function listExpiredDispatching(nowMs: number): Promise<ExpiredDispatchingRecord[]> {
-    const nowSec = Math.floor(nowMs / 1000);
+  async function listExpiredActive(): Promise<ExpiredActiveRecord[]> {
     const { rows } = await pool.query(
-      "SELECT id, core_run_id FROM remote_turn WHERE status='dispatching' AND pre_claim_expires_at IS NOT NULL AND pre_claim_expires_at <= $1",
-      [nowSec],
+      `SELECT id, core_run_id, status FROM remote_turn
+       WHERE status IN ('claimed','executing','reply_received','teardown_pending')
+         AND claim_expires_at IS NOT NULL
+         AND (SELECT extract(epoch from now())) >= claim_expires_at`,
+    );
+    return rows.map((row) => ({
+      remoteTurnId: row.id as string,
+      coreRunId: row.core_run_id as string,
+      status: row.status as string,
+    }));
+  }
+
+  async function expireActiveTurn(remoteTurnId: string): Promise<boolean> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const turn = await readTurn(client, remoteTurnId);
+      if (!turn) return false;
+      const status = turn.status as RemoteTurnStatus;
+      if (status !== "claimed" && status !== "executing" && status !== "reply_received" && status !== "teardown_pending") {
+        return false;
+      }
+      const advanced = await advanceState(client, remoteTurnId, status, "timeout");
+      if (!advanced) return false;
+      await writeEvent(client, remoteTurnId, "timeout", { ceiling: true });
+      return true;
+    });
+  }
+
+  async function listCancelRequested(): Promise<CancelRequestedRecord[]> {
+    const { rows } = await pool.query(
+      "SELECT id, core_run_id FROM remote_turn WHERE status='cancel_requested'",
+    );
+    return rows.map((row) => ({
+      remoteTurnId: row.id as string,
+      coreRunId: row.core_run_id as string,
+    }));
+  }
+
+  async function listOrphanRuns(): Promise<OrphanRunRecord[]> {
+    const { rows } = await pool.query(
+      `SELECT r.id, r.lease_token FROM runs r
+       WHERE r.delivery_mode='remote_once' AND r.status='running'
+         AND NOT EXISTS (SELECT 1 FROM remote_turn t WHERE t.core_run_id = r.id)
+         AND r.lease_expires_at IS NOT NULL
+         AND r.lease_expires_at <= (SELECT extract(epoch from now()) * 1000)`,
+    );
+    return rows.map((row) => ({
+      coreRunId: row.id as string,
+      leaseToken: (row.lease_token as string | null) ?? null,
+    }));
+  }
+
+  async function failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<void> {
+    if (!leaseToken) return;
+    await withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      await runs.failOn(client, coreRunId, leaseToken, `orphaned remote_once run without an admission`);
+    });
+  }
+
+  async function listExpiredDispatching(_nowMs: number): Promise<ExpiredDispatchingRecord[]> {
+    const { rows } = await pool.query(
+      "SELECT id, core_run_id FROM remote_turn WHERE status='dispatching' AND pre_claim_expires_at IS NOT NULL AND (SELECT extract(epoch from now())) >= pre_claim_expires_at",
     );
     return rows.map((row) => ({
       remoteTurnId: row.id as string,
@@ -1078,9 +1182,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     beginTeardown,
     completeTeardown,
     abort,
+    terminateTurn,
     disable,
     listParked,
+    listExpiredActive,
+    expireActiveTurn,
+    listCancelRequested,
     listExpiredDispatching,
+    listOrphanRuns,
+    failOrphanRun,
     reconcile,
     readAuditChain,
     async close(): Promise<void> {

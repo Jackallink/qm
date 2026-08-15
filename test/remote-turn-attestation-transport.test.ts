@@ -251,6 +251,17 @@ test("verifyPreClaimAttestation rejects a non-URI endpoint allowlist item", asyn
   assert.equal(claims, null);
 });
 
+test("verifyPreClaimAttestation rejects a hostless http URI in the allowlist", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload({ endpointAllowlist: ["http:foo"] }));
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
 test("verifyStartProof rejects an unknown extra field (additionalProperties false)", async () => {
   const fixture = await makeAttestor(() => 1_799_999_000);
   const verifier = createAttestationVerifier({ now: fixture.now });
