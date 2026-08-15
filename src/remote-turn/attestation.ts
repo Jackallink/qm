@@ -84,6 +84,15 @@ function matches(value: string, pattern: string): boolean {
   return new RegExp(pattern).test(value);
 }
 
+function isHttpUri(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function findKey(attestationKeySet: KeySetEntry[], kid: string): KeySetEntry | null {
   return attestationKeySet.find((entry) => entry.kid === kid) ?? null;
 }
@@ -96,10 +105,11 @@ function keyLoader(attestationKeySet: KeySetEntry[], cache: KeyCache): (kid: str
   return (kid: string) => {
     const entry = findKey(attestationKeySet, kid);
     if (!entry) return Promise.resolve(null);
-    const existing = cache.get(entry.kid);
+    const cacheKey = `${entry.kid}@${entry.publicKeyPem.length}:${entry.publicKeyPem.slice(-24)}`;
+    const existing = cache.get(cacheKey);
     if (existing) return existing;
     const loaded = importSPKI(entry.publicKeyPem, "EdDSA").catch(() => null);
-    cache.set(entry.kid, loaded);
+    cache.set(cacheKey, loaded);
     return loaded;
   };
 }
@@ -109,7 +119,7 @@ async function verifyAttestationJws(
   attestationKeySet: KeySetEntry[],
   now: number,
   cache: KeyCache,
-): Promise<unknown | null> {
+): Promise<{ payload: unknown; headerKid: string } | null> {
   const loadKey = keyLoader(attestationKeySet, cache);
   const dot = jws.indexOf(".");
   if (dot <= 0) return null;
@@ -129,7 +139,7 @@ async function verifyAttestationJws(
   if (!entry || !entryActive(entry, now)) return null;
   try {
     const { payload } = await compactVerify(jws, key, { algorithms: ["EdDSA"] });
-    return JSON.parse(new TextDecoder().decode(payload)) as unknown;
+    return { payload: JSON.parse(new TextDecoder().decode(payload)) as unknown, headerKid };
   } catch {
     return null;
   }
@@ -157,7 +167,13 @@ function validatePreClaimClaims(value: unknown): PreClaimClaims | null {
   if (!isString(value.isolationMode)) return null;
   if (!isString(value.policyDigest) || !matches(value.policyDigest, SHA256_PATTERN)) return null;
   if (!isString(value.networkPolicyId)) return null;
-  if (!Array.isArray(value.endpointAllowlist) || !value.endpointAllowlist.every((item) => isString(item))) return null;
+  if (
+    !Array.isArray(value.endpointAllowlist) ||
+    value.endpointAllowlist.length < 1 ||
+    !value.endpointAllowlist.every((item) => isString(item) && isHttpUri(item))
+  ) {
+    return null;
+  }
   if (!isString(value.egressAudience)) return null;
   if (!isInteger(value.expiry)) return null;
   if (value.singleUse !== true) return null;
@@ -261,15 +277,19 @@ export function createAttestationVerifier(opts: AttestationVerifierOptions = {})
   const cache: KeyCache = new Map();
   return {
     async verifyPreClaimAttestation(jws, input): Promise<PreClaimClaims | null> {
-      const payload = await verifyAttestationJws(jws, input.attestationKeySet, now(), cache);
-      const claims = validatePreClaimClaims(payload);
+      const verified = await verifyAttestationJws(jws, input.attestationKeySet, now(), cache);
+      if (!verified) return null;
+      const claims = validatePreClaimClaims(verified.payload);
       if (!claims || !preClaimExpectedMatches(claims, input.expected)) return null;
       return claims;
     },
     async verifyStartProof(jws, input): Promise<StartProofClaims | null> {
-      const payload = await verifyAttestationJws(jws, input.attestationKeySet, now(), cache);
-      const claims = validateStartProofClaims(payload);
-      if (!claims || !startProofExpectedMatches(claims, input.expected)) return null;
+      const verified = await verifyAttestationJws(jws, input.attestationKeySet, now(), cache);
+      if (!verified) return null;
+      const claims = validateStartProofClaims(verified.payload);
+      if (!claims) return null;
+      if (claims.attestorKid !== verified.headerKid) return null;
+      if (!startProofExpectedMatches(claims, input.expected)) return null;
       return claims;
     },
   };

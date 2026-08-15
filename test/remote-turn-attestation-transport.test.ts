@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { CompactSign, exportSPKI } from "jose";
-import { createAttestationVerifier } from "../src/remote-turn/attestation.ts";
+import { createAttestationVerifier, type PreClaimExpected, type StartProofExpected } from "../src/remote-turn/attestation.ts";
 import type { KeySetEntry } from "../src/remote-turn/binding-store.ts";
 
 const encoder = new TextEncoder();
@@ -63,7 +63,7 @@ function preClaimPayload(overrides: Record<string, unknown> = {}): Record<string
   };
 }
 
-function preClaimExpected(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function preClaimExpected(overrides: Record<string, unknown> = {}): PreClaimExpected {
   return {
     remoteTurnId: UUID,
     bindingVersion: 1,
@@ -77,7 +77,7 @@ function preClaimExpected(overrides: Record<string, unknown> = {}): Record<strin
     expiry: 1_800_000_000,
     singleUse: true,
     ...overrides,
-  };
+  } as unknown as PreClaimExpected;
 }
 
 function startProofPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -99,14 +99,14 @@ function startProofPayload(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
-function startProofExpected(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function startProofExpected(overrides: Record<string, unknown> = {}): StartProofExpected {
   return {
     executionLeaseHash: HASH64,
     plannedSandboxId: "sandbox-1",
     intendedWorkloadIdentity: "wli",
     turnJtiHash: HASH64,
     ...overrides,
-  };
+  } as unknown as StartProofExpected;
 }
 
 test("verifyPreClaimAttestation accepts a valid attestor-signed pre-claim attestation", async () => {
@@ -115,7 +115,7 @@ test("verifyPreClaimAttestation accepts a valid attestor-signed pre-claim attest
   const jws = await fixture.sign(preClaimPayload());
   const claims = await verifier.verifyPreClaimAttestation(jws, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected() as never,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
   });
   assert.ok(claims);
   assert.equal(claims.remoteTurnId, UUID);
@@ -133,7 +133,7 @@ test("verifyPreClaimAttestation rejects a tampered signature", async () => {
   const forged = `${header}.${tampered}.${signature}`;
   const claims = await verifier.verifyPreClaimAttestation(forged, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected() as never,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
   });
   assert.equal(claims, null);
 });
@@ -144,7 +144,7 @@ test("verifyPreClaimAttestation rejects a key outside the pinned attestor set", 
   const jws = await fixture.sign(preClaimPayload(), "unknown-kid");
   const claims = await verifier.verifyPreClaimAttestation(jws, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected() as never,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
   });
   assert.equal(claims, null);
 });
@@ -160,7 +160,7 @@ test("verifyPreClaimAttestation rejects a retired key", async () => {
   const jws = await fixture.sign(preClaimPayload());
   const claims = await verifier.verifyPreClaimAttestation(jws, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected() as never,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
   });
   assert.equal(claims, null);
 });
@@ -171,7 +171,7 @@ test("verifyPreClaimAttestation rejects mismatched expected fields", async () =>
   const jws = await fixture.sign(preClaimPayload());
   const claims = await verifier.verifyPreClaimAttestation(jws, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected({ turnJtiHash: "b".repeat(64) }) as never,
+    expected: preClaimExpected({ turnJtiHash: "b".repeat(64) }) as unknown as PreClaimExpected,
   });
   assert.equal(claims, null);
 });
@@ -182,7 +182,7 @@ test("verifyPreClaimAttestation rejects an unknown extra field (additionalProper
   const jws = await fixture.sign(preClaimPayload({ smuggled: "field" }));
   const claims = await verifier.verifyPreClaimAttestation(jws, {
     attestationKeySet: fixture.keySet,
-    expected: preClaimExpected() as never,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
   });
   assert.equal(claims, null);
 });
@@ -193,14 +193,14 @@ test("verifyStartProof accepts a valid start proof and enforces planned-vs-actua
   const valid = await fixture.sign(startProofPayload());
   const ok = await verifier.verifyStartProof(valid, {
     attestationKeySet: fixture.keySet,
-    expected: startProofExpected() as never,
+    expected: startProofExpected() as unknown as StartProofExpected,
   });
   assert.ok(ok);
   assert.equal(ok.sandboxId, "sandbox-1");
   const mismatch = await fixture.sign(startProofPayload({ sandboxId: "sandbox-2" }));
   const denied = await verifier.verifyStartProof(mismatch, {
     attestationKeySet: fixture.keySet,
-    expected: startProofExpected() as never,
+    expected: startProofExpected() as unknown as StartProofExpected,
   });
   assert.equal(denied, null);
 });
@@ -211,7 +211,7 @@ test("verifyStartProof rejects an attestation claiming a wrong lease", async () 
   const jws = await fixture.sign(startProofPayload());
   const claims = await verifier.verifyStartProof(jws, {
     attestationKeySet: fixture.keySet,
-    expected: startProofExpected({ executionLeaseHash: "c".repeat(64) }) as never,
+    expected: startProofExpected({ executionLeaseHash: "c".repeat(64) }) as unknown as StartProofExpected,
   });
   assert.equal(claims, null);
 });
@@ -223,8 +223,90 @@ test("verifyStartProof rejects a start proof that omits the execution lease", as
   const jws = await fixture.sign(withoutLease);
   const claims = await verifier.verifyStartProof(jws, {
     attestationKeySet: fixture.keySet,
-    expected: startProofExpected() as never,
+    expected: startProofExpected() as unknown as StartProofExpected,
   });
   assert.equal(claims, null);
   void executionLeaseHash;
+});
+
+test("verifyPreClaimAttestation rejects an empty endpoint allowlist", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload({ endpointAllowlist: [] }));
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyPreClaimAttestation rejects a non-URI endpoint allowlist item", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload({ endpointAllowlist: ["not-a-url"] }));
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyStartProof rejects an unknown extra field (additionalProperties false)", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(startProofPayload({ smuggled: "field" }));
+  const claims = await verifier.verifyStartProof(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: startProofExpected() as unknown as StartProofExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyPreClaimAttestation rejects a key that is not yet activated", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const current = fixture.keySet[0]!;
+  fixture.keySet[0] = {
+    ...current,
+    activatedAt: 1_800_000_000,
+  };
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload());
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyPreClaimAttestation rejects a pre-claim carrying an execution lease", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload({ executionLeaseHash: HASH64 }));
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyPreClaimAttestation rejects an artifact const mismatch", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(preClaimPayload({ artifact: "start_proof" }));
+  const claims = await verifier.verifyPreClaimAttestation(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: preClaimExpected() as unknown as PreClaimExpected,
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyStartProof rejects a payload attestorKid that differs from the header kid", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(startProofPayload({ attestorKid: "attestor-other" }));
+  const claims = await verifier.verifyStartProof(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: startProofExpected() as unknown as StartProofExpected,
+  });
+  assert.equal(claims, null);
 });
