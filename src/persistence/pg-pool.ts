@@ -115,9 +115,14 @@ async function drainPending(entry: {
   const pending = entry.pending.splice(0);
   const unseen = pending.filter((s) => !entry.applied.has(s));
   if (unseen.length === 0) return;
-  const p = await entry.pool.pool();
-  await applyDdl(p, unseen);
   for (const stmt of unseen) entry.applied.add(stmt);
+  try {
+    const p = await entry.pool.pool();
+    await applyDdl(p, unseen);
+  } catch (error) {
+    for (const stmt of unseen) entry.applied.delete(stmt);
+    throw error;
+  }
 }
 
 export function sharedPgPool(connectionString: string, statements: string[]): PgPool {
@@ -147,8 +152,15 @@ export function sharedPgPool(connectionString: string, statements: string[]): Pg
       async schema(schemaSql: string): Promise<void> {
         const stmt = schemaSql.trim();
         assertOneStatement(stmt);
-        await drainPending(state);
-        await state.pool.schema?.(stmt);
+        if (state.applied.has(stmt)) return;
+        state.applied.add(stmt);
+        try {
+          await drainPending(state);
+          await state.pool.schema?.(stmt);
+        } catch (error) {
+          state.applied.delete(stmt);
+          throw error;
+        }
       },
       async close(): Promise<void> {
         state.refs -= 1;
@@ -162,8 +174,10 @@ export function sharedPgPool(connectionString: string, statements: string[]): Pg
     entry = state;
   }
   for (const stmt of statements) {
-    if (!entry.applied.has(stmt.trim()) && !entry.pending.includes(stmt.trim())) {
-      entry.pending.push(stmt.trim());
+    const trimmed = stmt.trim();
+    assertOneStatement(trimmed);
+    if (!entry.applied.has(trimmed) && !entry.pending.includes(trimmed)) {
+      entry.pending.push(trimmed);
     }
   }
   entry.refs += 1;

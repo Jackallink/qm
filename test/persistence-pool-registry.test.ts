@@ -24,5 +24,6 @@ test("sharedPgPool accumulates DDL from later callers on the same connection str
   assert.equal(first, second, "same memoized pool");
   await second.query("INSERT INTO shared_registry_t2(id) VALUES ('x')");
   await first.query("DROP TABLE IF EXISTS shared_registry_t1, shared_registry_t2");
+  await first.close();
   await second.close();
 });
