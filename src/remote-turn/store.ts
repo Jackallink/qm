@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { sharedPgPool, withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
 import { REMOTE_TURN_DDL_ALL, REMOTE_TURN_RUN_DDL, REMOTE_TURN_SESSION_DDL } from "./schema.ts";
-import { nextState, type RemoteTurnStatus } from "./state-machine.ts";
+import { nextState, type RemoteTurnEvent, type RemoteTurnStatus } from "./state-machine.ts";
 import { deriveWindowAnchorMs, createRemoteBudgetLedger, type RemoteBudgetLedger } from "./budget-ledger.ts";
 import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest, type RemoteTurnHistoryMessage } from "./envelope.ts";
 import { getOrCreateByThreadOn } from "../sessions/postgres-session-store.ts";
@@ -11,6 +11,7 @@ import type { RunStore } from "../runs/run-store.ts";
 import type { TurnResult } from "../types.ts";
 import { csprngHex, mintAbortToken, sha256Hex, verifyReceipt } from "./tokens.ts";
 import { createAttestationVerifier, type PreClaimClaims, type StartProofClaims } from "./attestation.ts";
+export type { PreClaimClaims };
 import { createRemoteBindingStore, type KeySetEntry } from "./binding-store.ts";
 
 export interface G0Context {
@@ -113,6 +114,39 @@ export interface TerminationEvidence {
   proofDigest: string;
 }
 
+export interface AbortInput {
+  remoteTurnId: string;
+  actor: string;
+}
+
+export type AbortResult =
+  | { ok: true; status: "cancel_requested" }
+  | { ok: false; reason: "not_found" | "not_abortable" | "already_cancelled" | "parked" };
+
+export type DisableTargetOutcome = "cancelled" | "parked" | "failed";
+
+export interface DisableTargetResult {
+  remoteTurnId: string;
+  outcome: DisableTargetOutcome;
+}
+
+export type DisableResult =
+  | { ok: true; bindingVersion: number; targets: DisableTargetResult[] }
+  | { ok: false; reason: "binding_not_found" };
+
+export type ReconcileOutcome = "completed" | "cancelled" | "failed";
+
+export type ReconcileResult =
+  | { ok: true; outcome: ReconcileOutcome }
+  | { ok: false; reason: "not_reconciliable" | "not_found" };
+
+export interface ParkedTurnRecord {
+  remoteTurnId: string;
+  coreRunId: string;
+  bindingId: string;
+  parkedAt: number | null;
+}
+
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
   claim(input: ClaimInput): Promise<LeaseResult>;
@@ -126,6 +160,10 @@ export interface RemoteTurnStore {
     remoteTurnId: string;
     evidence: TerminationEvidence;
   }): Promise<"completed" | "parked" | "not_ready">;
+  abort(input: AbortInput): Promise<AbortResult>;
+  disable(input: { bindingId: string; actor: string }): Promise<DisableResult>;
+  listParked(): Promise<ParkedTurnRecord[]>;
+  reconcile(input: { remoteTurnId: string; outcome: ReconcileOutcome; evidenceDigest: string }): Promise<ReconcileResult>;
   close(): Promise<void>;
 }
 
@@ -619,7 +657,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     remoteTurnId: string,
   ): Promise<Record<string, unknown> | null> {
     const { rows } = await client.query<Record<string, unknown>>(
-      `SELECT id, status, core_run_id, qm_session_id, binding_id, binding_version, turn_jti_hash, execution_lease_hash,
+      `SELECT id, status, version, core_run_id, qm_session_id, binding_id, binding_version, turn_jti_hash, execution_lease_hash,
               input_digest, release_digest, workload_identity, planned_sandbox_id, reply, output_bytes, receipt_key_snapshot
        FROM remote_turn WHERE id=$1 FOR UPDATE`,
       [remoteTurnId],
@@ -779,6 +817,162 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return result;
   }
 
+  async function abortTurnOnClient(client: PoolClient, remoteTurnId: string, actor: string): Promise<AbortResult> {
+    const turn = await readTurn(client, remoteTurnId);
+    if (!turn) return { ok: false as const, reason: "not_found" as const };
+    const status = turn.status as RemoteTurnStatus;
+    const terminal = new Set<RemoteTurnStatus>([
+      "completed",
+      "rejected",
+      "failed_pre_dispatch",
+      "failed",
+      "cancelled",
+    ]);
+    if (terminal.has(status)) return { ok: false as const, reason: "not_abortable" as const };
+    if (status === "cancel_requested") return { ok: false as const, reason: "already_cancelled" as const };
+    if (status === "parked") {
+      await client.query("UPDATE remote_turn SET abort_requested_at=$2, updated_at=$3 WHERE id=$1", [
+        remoteTurnId,
+        now(),
+        now(),
+      ]);
+      await writeEvent(client, remoteTurnId, "abort", { actor, parked: true });
+      return { ok: false as const, reason: "parked" as const };
+    }
+    const event: Parameters<typeof nextState>[1] = status === "dispatching" ? "abort_pre_claim" : "abort";
+    const advanced = await advanceState(client, remoteTurnId, status, event);
+    if (!advanced) return { ok: false as const, reason: "not_abortable" as const };
+    const abortJtiHash = sha256Hex(csprngHex());
+    await client.query(
+      "UPDATE remote_turn SET abort_jti_hash=$2, abort_requested_at=$3, updated_at=$4 WHERE id=$1",
+      [remoteTurnId, abortJtiHash, now(), now()],
+    );
+    await writeEvent(client, remoteTurnId, event, { actor });
+    await releaseTurnResources(client, remoteTurnId);
+    await failRemoteRunOnClient(client, turn.core_run_id as string, `remote turn aborted by ${actor}`);
+    return { ok: true as const, status: "cancel_requested" as const };
+  }
+
+  async function releaseTurnResources(client: PoolClient, remoteTurnId: string): Promise<void> {
+    const { rows: reservationRows } = await client.query<{ id: string }>(
+      "SELECT id FROM budget_reservations WHERE remote_turn_id=$1",
+      [remoteTurnId],
+    );
+    if (reservationRows[0]) {
+      await ledger.settleReservation(client, { remoteTurnId, trustedUsageUsd: 0, invalidMetering: false });
+    }
+    await client.query("DELETE FROM session_leases WHERE holder=$1", [`remote_turn:${remoteTurnId}`]);
+  }
+
+  async function failRemoteRunOnClient(client: PoolClient, coreRunId: string, error: string): Promise<void> {
+    const { rows } = await client.query<{ lease_token: string | null }>(
+      "SELECT lease_token FROM runs WHERE id=$1",
+      [coreRunId],
+    );
+    const leaseToken = rows[0]?.lease_token ?? null;
+    if (leaseToken) await runs.failOn(client, coreRunId, leaseToken, error);
+  }
+
+  async function abort(input: AbortInput): Promise<AbortResult> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      return abortTurnOnClient(client, input.remoteTurnId, input.actor);
+    });
+  }
+
+  async function disable(input: { bindingId: string; actor: string }): Promise<DisableResult> {
+    let version: number;
+    try {
+      version = (await bindingStore.setEnabled(input.bindingId, false, input.actor)).version;
+    } catch {
+      return { ok: false as const, reason: "binding_not_found" as const };
+    }
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT id FROM remote_turn
+         WHERE binding_id=$1 AND status IN ('dispatching','claimed','executing','reply_received','teardown_pending','cancel_requested','parked')
+         FOR UPDATE`,
+        [input.bindingId],
+      );
+      const targets: DisableTargetResult[] = [];
+      for (const row of rows) {
+        const result = await abortTurnOnClient(client, row.id, input.actor);
+        const status = await readTurn(client, row.id);
+        const outcome: DisableTargetOutcome = result.ok
+          ? "cancelled"
+          : result.reason === "parked"
+            ? "parked"
+            : status && status.status === "cancelled"
+              ? "cancelled"
+              : "parked";
+        targets.push({ remoteTurnId: row.id, outcome });
+      }
+      return { ok: true as const, bindingVersion: version, targets };
+    });
+  }
+
+  async function listParked(): Promise<ParkedTurnRecord[]> {
+    const { rows } = await pool.query(
+      "SELECT id, core_run_id, binding_id, parked_at FROM remote_turn WHERE status='parked'",
+    );
+    return rows.map((row) => ({
+      remoteTurnId: row.id as string,
+      coreRunId: row.core_run_id as string,
+      bindingId: row.binding_id as string,
+      parkedAt: (row.parked_at as number | null) ?? null,
+    }));
+  }
+
+  async function reconcile(input: {
+    remoteTurnId: string;
+    outcome: ReconcileOutcome;
+    evidenceDigest: string;
+  }): Promise<ReconcileResult> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const turn = await readTurn(client, input.remoteTurnId);
+      if (!turn) return { ok: false as const, reason: "not_found" as const };
+      if (turn.status !== "parked") return { ok: false as const, reason: "not_reconciliable" as const };
+      const event: RemoteTurnEvent =
+        input.outcome === "completed"
+          ? "reconcile_completed"
+          : input.outcome === "cancelled"
+            ? "reconcile_cancelled"
+            : "reconcile_failed";
+      const to = nextState("parked", event);
+      const { rowCount } = await client.query(
+        `UPDATE remote_turn SET status=$2, reconciled_from_state='parked', reconciliation_evidence_ref=$3,
+           version=version+1, updated_at=$4
+         WHERE id=$1 AND status='parked' AND version=$5`,
+        [input.remoteTurnId, to, input.evidenceDigest, now(), Number(turn.version)],
+      );
+      if (rowCount !== 1) return { ok: false as const, reason: "not_reconciliable" as const };
+      await writeEvent(client, input.remoteTurnId, event, { evidenceDigest: input.evidenceDigest });
+      await releaseTurnResources(client, input.remoteTurnId);
+      if (input.outcome === "completed") {
+        const runId = turn.core_run_id as string;
+        const reply = (turn.reply as string | null) ?? "";
+        const sessionId = (turn.qm_session_id as string | null) ?? undefined;
+        const { rows } = await client.query<{ lease_token: string | null }>(
+          "SELECT lease_token FROM runs WHERE id=$1",
+          [runId],
+        );
+        const leaseToken = rows[0]?.lease_token ?? null;
+        if (!leaseToken) throw new Error(`remote turn ${input.remoteTurnId} reconciled completed but no run lease found`);
+        const completed = await runs.completeOn(client, runId, leaseToken, {
+          status: "ok",
+          reply,
+          ...(sessionId ? { sessionId } : {}),
+        } as TurnResult);
+        if (!completed) throw new Error(`remote turn ${input.remoteTurnId} could not complete its run`);
+      } else {
+        await failRemoteRunOnClient(client, turn.core_run_id as string, `reconciled ${input.outcome}`);
+      }
+      return { ok: true as const, outcome: input.outcome };
+    });
+  }
+
   return {
     admit,
     claim,
@@ -789,6 +983,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     receiveReceipt,
     beginTeardown,
     completeTeardown,
+    abort,
+    disable,
+    listParked,
+    reconcile,
     async close(): Promise<void> {
       await pool.close();
     },
