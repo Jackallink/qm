@@ -4,6 +4,8 @@
 
 **walkthrough-approved** — 2026-08-15, Gate 1 approval conditions closed in [06-gate1-review.md](./06-gate1-review.md). Implementation starts only after the test matrix in this directory is approved, with red tests for the relevant criteria.
 
+**Gate 2: upstream generic extension implemented** — red-test-first; validation in [07-gate2-validation.md](./07-gate2-validation.md). D0-T/G0/X0 evidence still required before Gate 2 completion sign-off and any binding enablement/canary.
+
 - Audit baseline: `2fbfc00549444ac8cc3977d9e5c6ea9f9f50762d` (2026-08-11)
 - Storage design revision: the draft's D0-T precondition has been exercised per its own revision clause. The storage design is now the named **PostgreSQL reference profile** (the current QM session primitive is PostgreSQL-based), re-audited through the multi-expert walkthrough and Gate 1 review recorded in [06-gate1-review.md](./06-gate1-review.md). D0-L already provides local Docker/Postgres persistence evidence (`d0-local-docker-baseline-v1/05-validation-and-drift.md`). D0-T's remaining role is to prove that the target environment matches this profile's durable transaction, session-binding, locking, migration, recovery, and cross-instance semantics; a mismatch requires a revised, separately audited storage design before Gate 2 completion. A local, memory, or independently committed substitute is not valid.
 - External research is reference material only; it is not implementation evidence.
