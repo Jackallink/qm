@@ -182,6 +182,23 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       }
     },
 
+    async claimRemoteOnce(runId, leaseToken, workerId, ttlMs): Promise<Run | null> {
+      const now = Date.now();
+      try {
+        const { rows } = await q(
+          `UPDATE runs SET status='running', lease_expires_at=$2, worker_id=$3,
+             attempts=attempts+1, started_at=COALESCE(started_at,$4)
+           WHERE id=$1 AND status='pending' AND delivery_mode='remote_once' AND lease_token=$5
+           RETURNING *`,
+          [runId, now + ttlMs, workerId, now, leaseToken],
+        );
+        return rows[0] ? rowToRun(rows[0]) : null;
+      } catch (err) {
+        if (isUniqueViolation(err)) return null;
+        throw err;
+      }
+    },
+
     async heartbeat(runId, leaseToken, ttlMs): Promise<boolean> {
       const { rowCount } = await q(
         "UPDATE runs SET lease_expires_at=$1 WHERE id=$2 AND lease_token=$3 AND status='running'",

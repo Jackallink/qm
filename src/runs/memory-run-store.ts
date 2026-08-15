@@ -81,6 +81,17 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       return lease(run, workerId, ttlMs);
     },
 
+    async claimRemoteOnce(runId, leaseToken, workerId, ttlMs) {
+      const run = runs.get(runId);
+      if (!run || run.status !== "pending" || run.deliveryMode !== "remote_once" || run.leaseToken !== leaseToken) return null;
+      run.status = "running";
+      run.leaseExpiresAt = Date.now() + ttlMs;
+      run.workerId = workerId;
+      run.attempts += 1;
+      run.startedAt = run.startedAt ?? Date.now();
+      return run;
+    },
+
     async heartbeat(runId, leaseToken, ttlMs) {
       const run = runs.get(runId);
       if (!run || run.status !== "running" || run.leaseToken !== leaseToken) return false;

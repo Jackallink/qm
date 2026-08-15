@@ -63,6 +63,17 @@ export interface ClaimInput {
   version: number;
 }
 
+export interface DispatchEnvelope {
+  turnJti: string;
+  attestationNonce: string;
+}
+
+export type DispatchResult =
+  | { ok: true; dispatchAttempt: number; preClaimExpiresAt: number }
+  | { ok: false; reason: "no_lease" | "not_dispatchable" | "envelope_mismatch" };
+
+export type ExpirePreClaimResult = "expired" | "not_expired" | "not_dispatchable";
+
 export type LeaseResult =
   | { ok: true; executionLeaseHash: string; abortToken: string }
   | { ok: false; reason: "no_lease" | "attestation_invalid" };
@@ -70,6 +81,8 @@ export type LeaseResult =
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
   claim(input: ClaimInput): Promise<LeaseResult>;
+  prepareDispatch(input: { remoteTurnId: string; leaseToken: string; envelope: DispatchEnvelope }): Promise<DispatchResult>;
+  expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult>;
   close(): Promise<void>;
 }
 
@@ -326,6 +339,132 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return result;
   }
 
+  async function prepareDispatch(input: {
+    remoteTurnId: string;
+    leaseToken: string;
+    envelope: DispatchEnvelope;
+  }): Promise<DispatchResult> {
+    const turnJtiHash = sha256Hex(input.envelope.turnJti);
+    const nonceHash = sha256Hex(input.envelope.attestationNonce);
+
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows: runRows } = await client.query<{ lease_token: string | null }>(
+        "SELECT lease_token FROM runs WHERE id=(SELECT core_run_id FROM remote_turn WHERE id=$1)",
+        [input.remoteTurnId],
+      );
+      const runLease = runRows[0]?.lease_token ?? null;
+      if (runLease !== input.leaseToken) return { ok: false as const, reason: "no_lease" as const };
+
+      const { rows: turnRows } = await client.query<Record<string, unknown>>(
+        `SELECT status, turn_jti_hash, attestation_nonce_hash, version, pre_claim_expires_at
+         FROM remote_turn WHERE id=$1 FOR UPDATE`,
+        [input.remoteTurnId],
+      );
+      const turn = turnRows[0];
+      if (!turn) return { ok: false as const, reason: "no_lease" as const };
+
+      const status = turn.status as string;
+      const storedJtiHash = (turn.turn_jti_hash as string | null) ?? null;
+      const storedNonceHash = (turn.attestation_nonce_hash as string | null) ?? null;
+
+      if (status === "admitted" && storedJtiHash === null) {
+        const nowMs = Date.now();
+        const { rows: updated } = await client.query<Record<string, unknown>>(
+          `UPDATE remote_turn
+           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3,
+               dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
+               pre_claim_expires_at=$6, version=version+1, updated_at=$5
+           WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7
+           RETURNING version, pre_claim_expires_at, dispatch_attempt`,
+          [
+            input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
+            nowMs,
+            nowMs + 90_000,
+            Number(turn.version),
+          ],
+        );
+        const row = updated[0];
+        if (!row) return { ok: false as const, reason: "not_dispatchable" as const };
+        await client.query(
+          "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,'prepare_dispatch',$3,$4)",
+          [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), JSON.stringify({ dispatchAttempt: 1 }), Date.now()],
+        );
+        return {
+          ok: true as const,
+          dispatchAttempt: 1,
+          preClaimExpiresAt: Number(row.pre_claim_expires_at),
+        };
+      }
+
+      if (status === "dispatching") {
+        if (storedJtiHash !== turnJtiHash || storedNonceHash !== nonceHash) {
+          return { ok: false as const, reason: "envelope_mismatch" as const };
+        }
+        const { rows: bumped } = await client.query<{ dispatch_attempt: number; pre_claim_expires_at: number }>(
+          "UPDATE remote_turn SET dispatch_attempt=dispatch_attempt+1, updated_at=$2 WHERE id=$1 AND status='dispatching' RETURNING dispatch_attempt, pre_claim_expires_at",
+          [input.remoteTurnId, Date.now()],
+        );
+        const row = bumped[0];
+        return {
+          ok: true as const,
+          dispatchAttempt: row ? row.dispatch_attempt : 1,
+          preClaimExpiresAt: Number(turn.pre_claim_expires_at),
+        };
+      }
+
+      return { ok: false as const, reason: "not_dispatchable" as const };
+    });
+  }
+
+  async function expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query<Record<string, unknown>>(
+        "SELECT status, version, core_run_id, pre_claim_expires_at FROM remote_turn WHERE id=$1 FOR UPDATE",
+        [remoteTurnId],
+      );
+      const turn = rows[0];
+      if (!turn) return "not_dispatchable";
+      if (turn.status !== "dispatching") return "not_dispatchable";
+      const expiresAt = Number(turn.pre_claim_expires_at);
+      if (now < expiresAt) return "not_expired";
+
+      await client.query(
+        "UPDATE remote_turn SET status='failed_pre_dispatch', version=version+1, updated_at=$2 WHERE id=$1 AND status='dispatching'",
+        [remoteTurnId, now],
+      );
+      await client.query(
+        "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,'expire_pre_dispatch',$3,$4)",
+        [remoteTurnId, await nextEventSeq(client, remoteTurnId), JSON.stringify({}), now],
+      );
+
+      const { rows: reservationRows } = await client.query<{ id: string }>(
+        "SELECT id FROM budget_reservations WHERE remote_turn_id=$1",
+        [remoteTurnId],
+      );
+      if (reservationRows[0]) {
+        await ledger.settleReservation(client, { remoteTurnId, trustedUsageUsd: 0, invalidMetering: false });
+      }
+      await client.query(
+        "DELETE FROM session_leases WHERE holder=$1",
+        [`remote_turn:${remoteTurnId}`],
+      );
+      const coreRunId = turn.core_run_id as string;
+      const { rowCount } = await client.query(
+        "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='pending'",
+        [coreRunId, now],
+      );
+      if (rowCount !== 1) {
+        await client.query(
+          "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='running'",
+          [coreRunId, now],
+        );
+      }
+      return "expired";
+    });
+  }
+
   async function recordAttestationDenial(remoteTurnId: string): Promise<void> {
     try {
       await withPgTransaction(await pool.pool(), async (client) => {
@@ -351,6 +490,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   return {
     admit,
     claim,
+    prepareDispatch,
+    expirePreClaim,
     async close(): Promise<void> {
       await pool.close();
     },
