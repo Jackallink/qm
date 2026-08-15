@@ -60,6 +60,7 @@ export interface ClaimInput {
   attestationNonceHash: string;
   verifiedPreClaim: PreClaimClaims | null;
   runtimeAudience: string;
+  version: number;
 }
 
 export type LeaseResult =
@@ -267,35 +268,46 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   const abortKey = opts.abortKey ?? null;
 
   async function claim(input: ClaimInput): Promise<LeaseResult> {
+    await pool.pool();
     if (!abortKey) return { ok: false, reason: "attestation_invalid" };
     if (!input.verifiedPreClaim) return { ok: false, reason: "attestation_invalid" };
+    const verified = input.verifiedPreClaim;
     if (
-      input.verifiedPreClaim.turnJtiHash !== input.turnJtiHash ||
-      input.verifiedPreClaim.attestationNonceHash !== input.attestationNonceHash
+      verified.turnJtiHash !== input.turnJtiHash ||
+      verified.attestationNonceHash !== input.attestationNonceHash ||
+      verified.remoteTurnId !== input.remoteTurnId
     ) {
+      await recordAttestationDenial(input.remoteTurnId);
       return { ok: false, reason: "attestation_invalid" };
     }
 
     const executionLease = csprngHex();
     const executionLeaseHash = sha256Hex(executionLease);
     const claimedAt = now();
-
-    await pool.pool();
+    const claimedAtSec = Math.floor(claimedAt / 1000);
 
     const result = await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const { rows } = await client.query(
         `UPDATE remote_turn SET status='claimed', execution_lease_hash=$2, version=version+1, updated_at=$3
-         WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$4 AND abort_requested_at IS NULL
+         WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$4 AND abort_requested_at IS NULL AND version=$5
          RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
-        [input.remoteTurnId, executionLeaseHash, claimedAt, input.turnJtiHash],
+        [input.remoteTurnId, executionLeaseHash, claimedAt, input.turnJtiHash, input.version],
       );
       const row = rows[0];
       if (!row) return { ok: false as const, reason: "no_lease" as const };
 
+      if (verified.bindingVersion !== Number(row.binding_version)) {
+        await client.query(
+          "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,$3,$4,$5)",
+          [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), "attestation_invalid", JSON.stringify({ reason: "binding_version_mismatch" }), claimedAt],
+        );
+        return { ok: false as const, reason: "attestation_invalid" as const };
+      }
+
       await client.query(
-        "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,1,$2,$3,$4)",
-        [input.remoteTurnId, "claim", JSON.stringify({ executionLeaseHash }), claimedAt],
+        "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,$3,$4,$5)",
+        [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), "claim", JSON.stringify({ executionLeaseHash }), claimedAt],
       );
 
       const abortToken = await mintAbortToken(
@@ -303,9 +315,9 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           kid: abortKey.kid,
           iss: "urn:qm:core",
           aud: input.runtimeAudience,
-          iat: claimedAt,
-          nbf: claimedAt,
-          exp: claimedAt + 90,
+          iat: claimedAtSec,
+          nbf: claimedAtSec,
+          exp: claimedAtSec + 90,
           jti: csprngHex(),
           capability: "abort",
           remoteTurnId: input.remoteTurnId,
@@ -320,6 +332,28 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       return { ok: true as const, executionLeaseHash, abortToken };
     });
     return result;
+  }
+
+  async function recordAttestationDenial(remoteTurnId: string): Promise<void> {
+    try {
+      await withPgTransaction(await pool.pool(), async (client) => {
+        guardClientErrors(client);
+        await client.query(
+          "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,$3,$4,$5)",
+          [remoteTurnId, await nextEventSeq(client, remoteTurnId), "attestation_invalid", JSON.stringify({ reason: "attestation_mismatch" }), now()],
+        );
+      });
+    } catch {
+      // audit failure must not mask the refusal outcome
+    }
+  }
+
+  async function nextEventSeq(client: PoolClient, remoteTurnId: string): Promise<number> {
+    const { rows } = await client.query<{ max_seq: number | null }>(
+      "SELECT COALESCE(MAX(seq), 0) + 1 AS max_seq FROM remote_turn_events WHERE remote_turn_id=$1",
+      [remoteTurnId],
+    );
+    return Number(rows[0]?.max_seq ?? 1);
   }
 
   return {

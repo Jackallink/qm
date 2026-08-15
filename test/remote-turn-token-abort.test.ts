@@ -158,10 +158,17 @@ test("turn token rejects an expired token (now >= exp)", async () => {
   assert.equal(verified, null);
 });
 
+test("turn token rejects an iat more than 30s in the future", async () => {
+  const now = (): number => 1_800_000_000;
+  const fixture = await makeKeys(now);
+  const token = await fixture.sign(baseTurnClaims({ iat: 1_800_000_100 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050 }));
+  assert.equal(verified, null);
+});
+
 test("turn token rejects an early token (now < nbf - 30s skew)", async () => {
   const now = (): number => 1_800_000_000;
   const fixture = await makeKeys(now);
-  // nbf is 150s after iat; verification now is 50s after iat, so now < nbf - 30s skew
   const token = await fixture.sign(baseTurnClaims({ nbf: 1_800_000_150 }));
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050 }));
   assert.equal(verified, null);
@@ -325,83 +332,97 @@ test("remote turn key provider generates a persistent key pair", async () => {
   assert.ok(result);
 });
 
-test("claim consumes the turn JTI once and refuses a second claim", { skip }, async () => {
-  const pg = (await import("pg")).default;
+function validPreClaim(remoteTurnId: string, turnJtiHash: string, nonceHash: string): PreClaimClaims {
+  return {
+    artifact: "pre_claim_attestation",
+    schemaVersion: 1,
+    remoteTurnId,
+    bindingVersion: 1,
+    turnJtiHash,
+    attestationNonceHash: nonceHash,
+    intendedWorkloadIdentity: "wli",
+    plannedSandboxId: "sb-1",
+    releaseDigest: "a".repeat(64),
+    isolationMode: "isolated",
+    policyDigest: "b".repeat(64),
+    networkPolicyId: "net-1",
+    endpointAllowlist: ["https://api.example.com"],
+    egressAudience: "urn:qm:egress:1",
+    expiry: 1_800_000_100,
+    singleUse: true,
+  };
+}
+
+async function seedDispatchingTurn(p: import("pg").Pool, turnJtiHash: string, nonceHash: string): Promise<string> {
+  const remoteTurnId = randomUUID();
+  await p.query(
+    `INSERT INTO remote_turn(
+      id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
+      binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
+      created_at, updated_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
+    [remoteTurnId, `run-claim-${remoteTurnId}`, `key-claim-${remoteTurnId}`, "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+  );
+  return remoteTurnId;
+}
+
+async function claimStore(): Promise<{ store: ReturnType<typeof createRemoteTurnStore>; verifyKeys: CoreTokenKeySet }> {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const store = createRemoteTurnStore(URL!, {
-    abortKey: { kid: "claim-k", privateKeyPem: generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+    abortKey: { kid: "claim-k", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const verifyKeys: CoreTokenKeySet = [
+    { kid: "claim-k", publicKeyPem: await exportSPKI(publicKey), state: "current", activatedAt: 0, retiresAt: 1e15 },
+  ];
+  return { store, verifyKeys };
+}
+
+test("claim consumes the turn JTI once, mints a verifiable abort token, and refuses a second claim", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store, verifyKeys } = await claimStore();
+  await store.claim({
+    remoteTurnId: randomUUID(),
+    turnJtiHash: "f".repeat(64),
+    attestationNonceHash: "e".repeat(64),
+    verifiedPreClaim: validPreClaim(randomUUID(), "f".repeat(64), "e".repeat(64)),
+    runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+    version: 99,
   });
   const p = new pg.Pool({ connectionString: URL });
   try {
-    const remoteTurnId = randomUUID();
-    const turnJtiHash = "f".repeat(64);
-    const nonceHash = "e".repeat(64);
-    await store.claim({
-      remoteTurnId: randomUUID(),
-      turnJtiHash,
-      attestationNonceHash: nonceHash,
-      verifiedPreClaim: {
-        artifact: "pre_claim_attestation",
-        schemaVersion: 1,
-        remoteTurnId: randomUUID(),
-        bindingVersion: 1,
-        turnJtiHash,
-        attestationNonceHash: nonceHash,
-        intendedWorkloadIdentity: "wli",
-        plannedSandboxId: "sb-x",
-        releaseDigest: "a".repeat(64),
-        isolationMode: "isolated",
-        policyDigest: "b".repeat(64),
-        networkPolicyId: "net-x",
-        endpointAllowlist: ["https://api.example.com"],
-        egressAudience: "urn:qm:egress:x",
-        expiry: 1_800_000_100,
-        singleUse: true,
-      },
-      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
-    });
-    await p.query(
-      `INSERT INTO remote_turn(
-        id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
-        binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
-        created_at, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
-      [remoteTurnId, "run-claim-1", "key-claim-1", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
-    );
-    const verified: PreClaimClaims = {
-      artifact: "pre_claim_attestation",
-      schemaVersion: 1,
-      remoteTurnId,
-      bindingVersion: 1,
-      turnJtiHash,
-      attestationNonceHash: nonceHash,
-      intendedWorkloadIdentity: "wli",
-      plannedSandboxId: "sb-1",
-      releaseDigest: "a".repeat(64),
-      isolationMode: "isolated",
-      policyDigest: "b".repeat(64),
-      networkPolicyId: "net-1",
-      endpointAllowlist: ["https://api.example.com"],
-      egressAudience: "urn:qm:egress:1",
-      expiry: 1_800_000_100,
-      singleUse: true,
-    };
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    const verified = validPreClaim(remoteTurnId, "f".repeat(64), "e".repeat(64));
     const first = await store.claim({
       remoteTurnId,
-      turnJtiHash,
-      attestationNonceHash: nonceHash,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
       verifiedPreClaim: verified,
       runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
     });
     assert.equal(first.ok, true);
     if (first.ok) {
       assert.equal(first.executionLeaseHash.length, 64);
-      assert.ok(first.abortToken);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const verifiedAbort = await verifyAbortToken(
+        first.abortToken,
+        verifyKeys,
+        { aud: "urn:qm:v1:runtime:org1:r1", remoteTurnId, turnJtiHash: "f".repeat(64), now: nowSec },
+        { phase: "post_claim", persistedExecutionLeaseHash: first.executionLeaseHash },
+      );
+      assert.ok(verifiedAbort, "claim-minted abort token must verify with its own key set");
+      const { rows } = await p.query(
+        "SELECT event_type, seq FROM remote_turn_events WHERE remote_turn_id=$1 ORDER BY seq",
+        [remoteTurnId],
+      );
+      assert.deepEqual(rows.map((r) => [r.seq, r.event_type]), [[1, "claim"]]);
       const second = await store.claim({
         remoteTurnId,
-        turnJtiHash,
-        attestationNonceHash: nonceHash,
+        turnJtiHash: "f".repeat(64),
+        attestationNonceHash: "e".repeat(64),
         verifiedPreClaim: verified,
         runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+        version: 1,
       });
       assert.deepEqual(second, { ok: false, reason: "no_lease" });
     }
@@ -410,23 +431,145 @@ test("claim consumes the turn JTI once and refuses a second claim", { skip }, as
   }
 });
 
-test("claim refuses when attestation is missing or mismatched", { skip }, async () => {
+test("claim on an admitted turn writes next-seq events without colliding with admission events", { skip }, async () => {
   const pg = (await import("pg")).default;
+  const { store } = await claimStore();
   const p = new pg.Pool({ connectionString: URL });
   try {
-    const store = createRemoteTurnStore(URL!, {
-      abortKey: { kid: "claim-k", privateKeyPem: generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
-    });
-    const remoteTurnId = randomUUID();
-    const base: ClaimInput = {
+    await p.query("DELETE FROM remote_turn_events WHERE remote_turn_id LIKE 'admit-flow-%'");
+    const remoteTurnId = "admit-flow-" + randomUUID();
+    const turnJtiHash = "f".repeat(64);
+    const nonceHash = "e".repeat(64);
+    await p.query(
+      `INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,1,$2,$3,$4),($1,2,$2,$3,$4)`,
+      [remoteTurnId, "session_bind", JSON.stringify({}), 1_800_000_000],
+    );
+    await p.query(
+      `INSERT INTO remote_turn(
+        id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
+        binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
+        created_at, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
+      [remoteTurnId, "run-flow", "key-flow", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+    );
+    const verified = validPreClaim(remoteTurnId, turnJtiHash, nonceHash);
+    const result = await store.claim({
       remoteTurnId,
-      turnJtiHash: "f".repeat(64),
-      attestationNonceHash: "e".repeat(64),
-      verifiedPreClaim: null,
+      turnJtiHash,
+      attestationNonceHash: nonceHash,
+      verifiedPreClaim: verified,
       runtimeAudience: "urn:qm:v1:runtime:org1:r1",
-    };
-    assert.deepEqual(await store.claim(base), { ok: false, reason: "attestation_invalid" });
+      version: 1,
+    });
+    assert.equal(result.ok, true);
+    const { rows } = await p.query(
+      "SELECT event_type, seq FROM remote_turn_events WHERE remote_turn_id=$1 ORDER BY seq",
+      [remoteTurnId],
+    );
+    assert.deepEqual(rows.map((r) => [r.seq, r.event_type]), [
+      [1, "session_bind"],
+      [2, "session_bind"],
+      [3, "claim"],
+    ]);
   } finally {
     await p.end();
   }
+});
+
+test("claim refuses mismatched attestation and records an attestation_invalid event", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store } = await claimStore();
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    const verified = validPreClaim(remoteTurnId, "f".repeat(64), "e".repeat(64));
+    const wrongNonce = validPreClaim(remoteTurnId, "f".repeat(64), "d".repeat(64));
+    const mismatched = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: wrongNonce,
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(mismatched, { ok: false, reason: "attestation_invalid" });
+    const wrongTurn = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(randomUUID(), "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(wrongTurn, { ok: false, reason: "attestation_invalid" });
+    const { rows } = await p.query(
+      "SELECT event_type, payload FROM remote_turn_events WHERE remote_turn_id=$1 ORDER BY seq",
+      [remoteTurnId],
+    );
+    assert.ok(rows.length >= 2, "both mismatches must be audited");
+    for (const row of rows) assert.equal(row.event_type, "attestation_invalid");
+    const statusRow = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(statusRow.rows[0].status, "dispatching");
+  } finally {
+    await p.end();
+  }
+});
+
+test("claim with a stale version or wrong binding version gets no lease", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store } = await claimStore();
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    await store.claim({
+      remoteTurnId: randomUUID(),
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(randomUUID(), "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 99,
+    });
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    const verified = validPreClaim(remoteTurnId, "f".repeat(64), "e".repeat(64));
+    const stale = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: verified,
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 2,
+    });
+    assert.deepEqual(stale, { ok: false, reason: "no_lease" });
+    const wrongBinding = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: { ...verified, bindingVersion: 2 },
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(wrongBinding, { ok: false, reason: "attestation_invalid" });
+    const { rows } = await p.query(
+      "SELECT event_type, payload FROM remote_turn_events WHERE remote_turn_id=$1 ORDER BY seq",
+      [remoteTurnId],
+    );
+    assert.deepEqual(
+      rows.map((r) => [r.event_type, (r.payload as { reason?: string }).reason]),
+      [["attestation_invalid", "binding_version_mismatch"]],
+    );
+  } finally {
+    await p.end();
+  }
+});
+
+test("claim refuses when attestation is missing", { skip }, async () => {
+  const { store } = await claimStore();
+  const base: ClaimInput = {
+    remoteTurnId: randomUUID(),
+    turnJtiHash: "f".repeat(64),
+    attestationNonceHash: "e".repeat(64),
+    verifiedPreClaim: null,
+    runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+    version: 1,
+  };
+  assert.deepEqual(await store.claim(base), { ok: false, reason: "attestation_invalid" });
 });

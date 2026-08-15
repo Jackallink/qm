@@ -122,11 +122,11 @@ async function loadKey(kid: string, keys: CoreTokenKeySet): Promise<ImportedKey 
   return importSPKI(entry.publicKeyPem, "EdDSA");
 }
 
-export async function verifyTurnToken(
+async function verifyJwsCore(
   token: string,
   keys: CoreTokenKeySet,
-  expected: TurnExpected,
-): Promise<TurnClaims | null> {
+  now: number,
+): Promise<{ payload: Record<string, unknown>; headerKid: string } | null> {
   if (token.split(".").length !== 3) return null;
   let header: { alg?: string; kid?: string };
   try {
@@ -138,7 +138,7 @@ export async function verifyTurnToken(
   const headerKid = header.kid;
   if (headerKid === undefined) return null;
   const entry = keys.find((k) => k.kid === headerKid);
-  if (!entry || !entryActive(entry, expected.now)) return null;
+  if (!entry || !entryActive(entry, now)) return null;
   const keyLike = await loadKey(headerKid, keys);
   if (!keyLike) return null;
   let payload: unknown;
@@ -149,8 +149,19 @@ export async function verifyTurnToken(
     return null;
   }
   if (!payload || typeof payload !== "object") return null;
-  const claims = payload as Record<string, unknown>;
-  if (claims.kid !== headerKid) return null;
+  const record = payload as Record<string, unknown>;
+  if (record.kid !== headerKid) return null;
+  return { payload: record, headerKid };
+}
+
+export async function verifyTurnToken(
+  token: string,
+  keys: CoreTokenKeySet,
+  expected: TurnExpected,
+): Promise<TurnClaims | null> {
+  const verified = await verifyJwsCore(token, keys, expected.now);
+  if (!verified) return null;
+  const claims = verified.payload;
   if (!isTurnClaims(claims)) return null;
   const now = expected.now;
   if (now < claims.iat - SKEW_S) return null;
@@ -230,30 +241,9 @@ export async function verifyAbortToken(
   expected: AbortExpected,
   turnState: AbortTurnState,
 ): Promise<AbortClaims | null> {
-  if (token.split(".").length !== 3) return null;
-  let header: { alg?: string; kid?: string };
-  try {
-    header = decodeProtectedHeader(token);
-  } catch {
-    return null;
-  }
-  if (header.alg !== "EdDSA") return null;
-  const headerKid = header.kid;
-  if (headerKid === undefined) return null;
-  const entry = keys.find((k) => k.kid === headerKid);
-  if (!entry || !entryActive(entry, expected.now)) return null;
-  const keyLike = await loadKey(headerKid, keys);
-  if (!keyLike) return null;
-  let payload: unknown;
-  try {
-    const result = await compactVerify(token, keyLike, { algorithms: ["EdDSA"] });
-    payload = JSON.parse(new TextDecoder().decode(result.payload));
-  } catch {
-    return null;
-  }
-  if (!payload || typeof payload !== "object") return null;
-  const claims = payload as Record<string, unknown>;
-  if (claims.kid !== headerKid) return null;
+  const verified = await verifyJwsCore(token, keys, expected.now);
+  if (!verified) return null;
+  const claims = verified.payload;
   if (!isAbortClaims(claims)) return null;
   const now = expected.now;
   if (now < claims.iat - SKEW_S) return null;
