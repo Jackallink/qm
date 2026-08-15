@@ -62,7 +62,7 @@ async function reservationStatus(remoteTurnId: string): Promise<string | null> {
   return rows[0] === undefined ? null : String(rows[0].status);
 }
 
-async function reserve(scopeId: string, ceilingUsd: number): Promise<{ status: string; reservedUsd?: number }> {
+async function reserve(scopeId: string, ceilingUsd: number, seedUsd?: number): Promise<{ status: string; reservedUsd?: number }> {
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL });
   const result = await withPgTransaction(p, (tx) =>
@@ -71,6 +71,7 @@ async function reserve(scopeId: string, ceilingUsd: number): Promise<{ status: s
       bindingId: "binding-1",
       remoteTurnId: randomUUID(),
       ceilingUsd,
+      seedUsd: seedUsd ?? ceilingUsd,
       windowAnchorMs: ANCHOR,
     }),
   );
@@ -78,13 +79,43 @@ async function reserve(scopeId: string, ceilingUsd: number): Promise<{ status: s
   return result;
 }
 
-test("first-use seeding creates the balance row and reserves the ceiling", { skip }, async () => {
+test("first-use seeding creates the balance row with the window budget and reserves the ceiling", { skip }, async () => {
   const scopeId = `seed-${randomUUID()}`;
   assert.equal(await balanceFor(scopeId), -1, "balance row absent before first use");
-  const result = await reserve(scopeId, 100);
+  const result = await reserve(scopeId, 100, 300);
   assert.equal(result.status, "reserved");
   assert.equal(result.reservedUsd, 100);
-  assert.equal(await balanceFor(scopeId), 0, "full ceiling deducted");
+  assert.equal(await balanceFor(scopeId), 200, "window budget minus ceiling remains for the window");
+});
+
+test("a second reservation in the same window succeeds when the window budget exceeds one ceiling", { skip }, async () => {
+  const scopeId = `multi-${randomUUID()}`;
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL });
+  const first = await withPgTransaction(p, (tx) =>
+    ledger.reserveBudget(tx, {
+      scopeId,
+      bindingId: "binding-1",
+      remoteTurnId: randomUUID(),
+      ceilingUsd: 100,
+      seedUsd: 300,
+      windowAnchorMs: ANCHOR,
+    }),
+  );
+  const second = await withPgTransaction(p, (tx) =>
+    ledger.reserveBudget(tx, {
+      scopeId,
+      bindingId: "binding-1",
+      remoteTurnId: randomUUID(),
+      ceilingUsd: 100,
+      seedUsd: 300,
+      windowAnchorMs: ANCHOR,
+    }),
+  );
+  await p.end();
+  assert.equal(first.status, "reserved");
+  assert.equal(second.status, "reserved");
+  assert.equal(await balanceFor(scopeId), 100, "two ceilings drawn from the seeded window budget");
 });
 
 test("insufficient balance refuses admission without inserting a reservation", { skip }, async () => {
@@ -92,6 +123,14 @@ test("insufficient balance refuses admission without inserting a reservation", {
   await seedBalance(scopeId, 5);
   const result = await reserve(scopeId, 10);
   assert.equal(result.status, "insufficient");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL });
+  const { rows } = await p.query(
+    "SELECT COUNT(*) AS n FROM budget_reservations WHERE scope_id=$1 AND window_anchor_ms=$2",
+    [scopeId, ANCHOR],
+  );
+  await p.end();
+  assert.equal(Number(rows[0].n), 0, "no reservation row for a refused admission");
 });
 
 test("concurrent reservations both pass the single guarded update", { skip }, async () => {
@@ -107,6 +146,7 @@ test("concurrent reservations both pass the single guarded update", { skip }, as
           bindingId: "binding-1",
           remoteTurnId: randomUUID(),
           ceilingUsd: ceiling,
+          seedUsd: 200,
           windowAnchorMs: ANCHOR,
         }),
       ),
@@ -128,10 +168,11 @@ test("settlement releases unused reservation back to the balance on trusted usag
       bindingId: "binding-1",
       remoteTurnId,
       ceilingUsd: 100,
+      seedUsd: 100,
       windowAnchorMs: ANCHOR,
     });
     const outcome = await ledger.settleReservation(tx, {
-      reservationId: remoteTurnId,
+      remoteTurnId,
       trustedUsageUsd: 30,
       invalidMetering: false,
     });
@@ -153,10 +194,11 @@ test("missing trusted usage charges the full reservation", { skip }, async () =>
       bindingId: "binding-1",
       remoteTurnId,
       ceilingUsd: 100,
+      seedUsd: 100,
       windowAnchorMs: ANCHOR,
     });
     const outcome = await ledger.settleReservation(tx, {
-      reservationId: remoteTurnId,
+      remoteTurnId,
       trustedUsageUsd: null,
       invalidMetering: false,
     });
@@ -178,10 +220,11 @@ test("invalid metering parks: reservation stays reserved and balance stays deduc
       bindingId: "binding-1",
       remoteTurnId,
       ceilingUsd: 100,
+      seedUsd: 100,
       windowAnchorMs: ANCHOR,
     });
     const outcome = await ledger.settleReservation(tx, {
-      reservationId: remoteTurnId,
+      remoteTurnId,
       trustedUsageUsd: 30,
       invalidMetering: true,
     });
@@ -190,6 +233,45 @@ test("invalid metering parks: reservation stays reserved and balance stays deduc
   await p.end();
   assert.equal(await reservationStatus(remoteTurnId), "reserved");
   assert.equal(await balanceFor(scopeId), 0);
+});
+
+test("trusted usage above the ceiling releases with no balance top-up", { skip }, async () => {
+  const scopeId = `overusage-${randomUUID()}`;
+  const remoteTurnId = randomUUID();
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL });
+  await withPgTransaction(p, async (tx) => {
+    await ledger.reserveBudget(tx, {
+      scopeId,
+      bindingId: "binding-1",
+      remoteTurnId,
+      ceilingUsd: 100,
+      seedUsd: 100,
+      windowAnchorMs: ANCHOR,
+    });
+    const outcome = await ledger.settleReservation(tx, {
+      remoteTurnId,
+      trustedUsageUsd: 150,
+      invalidMetering: false,
+    });
+    assert.equal(outcome, "released");
+  });
+  await p.end();
+  assert.equal(await balanceFor(scopeId), 0, "no top-up when trusted usage exceeds the ceiling");
+});
+
+test("charging a nonexistent reservation returns parked, not a silent charged", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL });
+  const outcome = await withPgTransaction(p, (tx) =>
+    ledger.settleReservation(tx, {
+      remoteTurnId: randomUUID(),
+      trustedUsageUsd: null,
+      invalidMetering: false,
+    }),
+  );
+  await p.end();
+  assert.equal(outcome, "parked");
 });
 
 test("retried settlement does not double-release the balance", { skip }, async () => {
@@ -203,10 +285,11 @@ test("retried settlement does not double-release the balance", { skip }, async (
       bindingId: "binding-1",
       remoteTurnId,
       ceilingUsd: 100,
+      seedUsd: 100,
       windowAnchorMs: ANCHOR,
     });
     const first = await ledger.settleReservation(tx, {
-      reservationId: remoteTurnId,
+      remoteTurnId,
       trustedUsageUsd: 30,
       invalidMetering: false,
     });
@@ -214,7 +297,7 @@ test("retried settlement does not double-release the balance", { skip }, async (
   });
   await withPgTransaction(p, async (tx) => {
     const retried = await ledger.settleReservation(tx, {
-      reservationId: remoteTurnId,
+      remoteTurnId,
       trustedUsageUsd: 30,
       invalidMetering: false,
     });

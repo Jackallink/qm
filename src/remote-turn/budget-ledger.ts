@@ -31,6 +31,7 @@ export interface ReserveBudgetInput {
   bindingId: string;
   remoteTurnId: string;
   ceilingUsd: number;
+  seedUsd: number;
   windowAnchorMs: number;
 }
 
@@ -47,7 +48,7 @@ export interface BudgetInsufficient {
 export type ReserveBudgetResult = BudgetReserved | BudgetInsufficient;
 
 export interface SettleReservationInput {
-  reservationId: string;
+  remoteTurnId: string;
   trustedUsageUsd: number | null;
   invalidMetering: boolean;
 }
@@ -71,7 +72,7 @@ export function createRemoteBudgetLedger(connectionString: string): RemoteBudget
       const now = Date.now();
       await tx.query(
         "INSERT INTO budget_balances(scope_id, window_anchor_ms, available_usd) VALUES($1, $2, $3) ON CONFLICT (scope_id, window_anchor_ms) DO NOTHING",
-        [input.scopeId, input.windowAnchorMs, input.ceilingUsd],
+        [input.scopeId, input.windowAnchorMs, input.seedUsd],
       );
       const { rowCount } = await tx.query(
         "UPDATE budget_balances SET available_usd = available_usd - $1 WHERE scope_id=$2 AND window_anchor_ms=$3 AND available_usd >= $1",
@@ -87,15 +88,16 @@ export function createRemoteBudgetLedger(connectionString: string): RemoteBudget
     async settleReservation(tx, input): Promise<SettleReservationResult> {
       if (input.invalidMetering) return "parked";
       if (input.trustedUsageUsd === null) {
-        await tx.query(
+        const { rowCount } = await tx.query(
           "UPDATE budget_reservations SET status='charged' WHERE remote_turn_id=$1 AND status='reserved'",
-          [input.reservationId],
+          [input.remoteTurnId],
         );
+        if (rowCount !== 1) return "parked";
         return "charged";
       }
       const { rows, rowCount } = await tx.query(
         "UPDATE budget_reservations SET status='released' WHERE remote_turn_id=$1 AND status='reserved' RETURNING usd, scope_id, window_anchor_ms",
-        [input.reservationId],
+        [input.remoteTurnId],
       );
       if (rowCount !== 1) return "released";
       const row = rows[0] as unknown as { usd: string; scope_id: string; window_anchor_ms: number };
