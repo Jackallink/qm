@@ -23,7 +23,7 @@ All three attestation artifacts and both receipts use JWS compact serialization 
 | `executionLeaseHash` | sha256-hex | Hash of the execution lease. |
 | `inputDigest` | sha256-hex | Digest of the current user plain text. |
 | `historyDigest` | sha256-hex | Digest of the canonical serialization of the up-to-eight history messages. |
-| `envelopeDigest` | sha256-hex | `SHA-256(remoteTurnId \|\| bindingVersion \|\| conversationKey \|\| scopeId \|\| qmSessionId \|\| coreRunId \|\| inputDigest \|\| historyDigest)` with UTF-8 concatenation. |
+| `envelopeDigest` | sha256-hex | `SHA-256` over the 8 fields `remoteTurnId, bindingVersion, conversationKey, scopeId, qmSessionId, coreRunId, inputDigest, historyDigest` in this order, each field serialized as a length-prefixed frame: `uint32BE(fieldLen) || utf8(field)` concatenated in order. `historyDigest` is `SHA-256` over per-message frames `uint32BE(roleLen) || utf8(role) || uint32BE(textLen) || utf8(text)` concatenated in message order. `inputDigest` is `SHA-256(utf8(text))`. Length-prefix framing removes any role/text boundary ambiguity; JSON key order and whitespace never enter the digest. |
 | `releaseDigest` | sha256-hex | Digest of the immutable runtime release image. |
 | `policyDigest` | sha256-hex | `SHA-256(policySnapshotHash \|\| networkPolicyId \|\| endpointAllowlist \|\| egressAudience)`; core compares it to the binding snapshot. |
 | `sandboxId` | string | Attestor-assigned sandbox identity. |
