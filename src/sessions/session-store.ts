@@ -5,7 +5,7 @@ export interface Lease {
   token: string;
 }
 
-export type LeaseHolder = "turn" | "compaction" | "fork" | "backfill";
+export type LeaseHolder = "turn" | "compaction" | "fork" | "backfill" | `remote_turn:${string}`;
 
 export interface LeaseAttempt {
   lease: Lease | null;

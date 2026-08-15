@@ -34,7 +34,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
   const store: RunStore = {
     ...(Number.isFinite(maxClaims) ? { maxClaims } : {}),
 
-    async enqueue({ sessionId, request, dedupKey, maxAttempts = 3 }: EnqueueInput): Promise<EnqueueResult> {
+    async enqueue({ sessionId, request, dedupKey, maxAttempts = 3, deliveryMode = "local" }: EnqueueInput): Promise<EnqueueResult> {
       if (dedupKey) {
         const existingId = byKey.get(dedupKey);
         if (existingId) {
@@ -46,6 +46,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
         id: randomUUID(),
         sessionId,
         status: "pending",
+        deliveryMode,
         request,
         result: null,
         deliveryState: null,
@@ -67,7 +68,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
 
     async claim(workerId, ttlMs) {
       const pending = [...runs.values()]
-        .filter((r) => r.status === "pending" && !sessionHasRunning(r.sessionId))
+        .filter((r) => r.status === "pending" && r.deliveryMode === "local" && !sessionHasRunning(r.sessionId))
         .sort((a, b) => a.createdAt - b.createdAt);
       const run = pending[0];
       if (!run) return null;
@@ -76,7 +77,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
 
     async claimById(runId, workerId, ttlMs) {
       const run = runs.get(runId);
-      if (!run || run.status !== "pending" || sessionHasRunning(run.sessionId)) return null;
+      if (!run || run.status !== "pending" || run.deliveryMode !== "local" || sessionHasRunning(run.sessionId)) return null;
       return lease(run, workerId, ttlMs);
     },
 
@@ -90,6 +91,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     async releaseLease(runId, leaseToken) {
       const run = runs.get(runId);
       if (!run || run.status !== "running" || run.leaseToken !== leaseToken) return false;
+      if (run.deliveryMode === "remote_once") return false;
       run.status = "pending";
       run.leaseToken = null;
       run.leaseExpiresAt = null;
@@ -154,7 +156,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       opts?: { maxAgeMs?: number; onReap?: (event: ReapEvent) => void },
     ) {
       const now = Date.now();
-      const expired = [...runs.values()].filter((run) => leaseLapsed(run, now));
+      const expired = [...runs.values()].filter((run) => run.deliveryMode === "local" && leaseLapsed(run, now));
       let requeued = 0;
       let parked = 0;
       const retiredSessionIds: string[] = [];
@@ -215,6 +217,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     opts?: { ifExpiredAt?: number; countsAsError?: boolean },
   ): { requeued: boolean; applied: boolean } {
     if (run.status !== "running") return { requeued: false, applied: false };
+    if (run.deliveryMode === "remote_once") return { requeued: false, applied: false };
     if (opts?.ifExpiredAt !== undefined && (run.leaseExpiresAt === null || run.leaseExpiresAt > opts.ifExpiredAt)) {
       return { requeued: false, applied: false };
     }

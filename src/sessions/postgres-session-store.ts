@@ -399,7 +399,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async forceReleaseLease(sessionId): Promise<void> {
-      await q("DELETE FROM session_leases WHERE session_id = $1", [sessionId]);
+      await q("DELETE FROM session_leases WHERE session_id = $1 AND (holder IS NULL OR holder NOT LIKE 'remote_turn:%')", [
+        sessionId,
+      ]);
     },
 
     async append(lease, entry: NewEntry): Promise<SessionEntry> {
@@ -599,6 +601,12 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async deleteSession(sessionId): Promise<void> {
+      const held = await q("SELECT 1 FROM session_leases WHERE session_id = $1 AND holder LIKE 'remote_turn:%'", [
+        sessionId,
+      ]);
+      if (held.length) {
+        throw new Error("remote_refused: remote_turn_active");
+      }
       await withPgTransaction(await pool(), async (client) => {
         await client.query("DELETE FROM session_llm_requests WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM session_leases WHERE session_id = $1", [sessionId]);

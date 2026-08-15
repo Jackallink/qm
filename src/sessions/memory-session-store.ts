@@ -130,6 +130,10 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     },
 
     async deleteSession(sessionId) {
+      const held = leases.get(sessionId);
+      if (held && held.holder?.startsWith("remote_turn:")) {
+        throw new Error("remote_refused: remote_turn_active");
+      }
       const s = sessions.get(sessionId);
       if (s) byThread.delete(s.threadRef);
       for (const principalId of windows.get(sessionId)?.keys() ?? []) {
@@ -144,6 +148,8 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     },
 
     async forceReleaseLease(sessionId) {
+      const held = leases.get(sessionId);
+      if (held && held.holder?.startsWith("remote_turn:")) return;
       leases.delete(sessionId);
     },
 

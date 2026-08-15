@@ -297,4 +297,29 @@ for (const backend of backends) {
     const a1 = await ledger.begin("run1", 1, 0);
     assert.deepEqual(JSON.parse(a1.output ?? "null"), { cmd: "attempt-1" });
   });
+
+  test(`[${backend.name}] remote_once runs stay running through reap, release, and retry`, async () => {
+    const { runs } = backend.make();
+    const a = await runs.enqueue({ sessionId: "s-remote", request: turn("r"), deliveryMode: "remote_once" });
+    assert.equal(a.run.deliveryMode, "remote_once");
+    const claimed = await runs.claimById(a.run.id, "w1", 10_000);
+    assert.equal(claimed, null, "claimById refuses remote_once");
+    const c = await runs.claim("w1", 10_000);
+    assert.equal(c, null, "claim never returns remote_once");
+    assert.equal((await runs.get(a.run.id))?.status, "pending");
+    const b = await runs.enqueue({ sessionId: "s-remote", request: turn("r2") });
+    assert.equal(b.run.deliveryMode, "local", "default delivery mode is local");
+  });
+
+  test(`[${backend.name}] remote_once runs are never released or retired back to pending`, async () => {
+    const { runs } = backend.make();
+    const remote = await runs.enqueue({ sessionId: "s-noreq", request: turn("r"), deliveryMode: "remote_once" });
+    const claimed = await runs.claim("w1", 10_000);
+    assert.equal(claimed, null, "remote_once run is not claimable via claim");
+    const local = await runs.enqueue({ sessionId: "s-noreq2", request: turn("l") });
+    const claimedLocal = await runs.claim("w1", 10_000);
+    assert.equal(claimedLocal?.id, local.run.id, "a local run in another session is claimable");
+    assert.equal(await runs.releaseLease(remote.run.id, "any"), false, "releaseLease is a no-op for a non-running remote row");
+    assert.equal((await runs.get(remote.run.id))?.status, "pending");
+  });
 }

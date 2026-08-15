@@ -16,10 +16,13 @@ export interface RunDeliveryState {
   editRef?: string;
 }
 
+export type RunDeliveryMode = "local" | "remote_once";
+
 export interface Run {
   id: string;
   sessionId: string;
   status: RunStatus;
+  deliveryMode: RunDeliveryMode;
   request: OrchestratorInput;
   result: TurnResult | null;
   deliveryState: RunDeliveryState | null;
@@ -40,6 +43,7 @@ export interface EnqueueInput {
   request: OrchestratorInput;
   dedupKey?: string;
   maxAttempts?: number;
+  deliveryMode?: RunDeliveryMode;
 }
 
 export interface EnqueueResult {

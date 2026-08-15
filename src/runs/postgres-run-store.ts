@@ -24,6 +24,7 @@ function rowToRun(r: Record<string, unknown>): Run {
     id: r.id as string,
     sessionId: r.session_id as string,
     status: r.status as Run["status"],
+    deliveryMode: (r.delivery_mode as Run["deliveryMode"]) ?? "local",
     request: { ...request, origin: resolveTurnOrigin(request) },
     result: r.result != null ? (JSON.parse(r.result as string) as TurnResult) : null,
     deliveryState: r.delivery_state != null ? (JSON.parse(r.delivery_state as string) as RunDeliveryState) : null,
@@ -54,6 +55,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         created_at BIGINT NOT NULL, started_at BIGINT, finished_at BIGINT
       )`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery_state TEXT`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery_mode TEXT NOT NULL DEFAULT 'local'`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_attempts INT NOT NULL DEFAULT 0`,
     `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_session_active_created
@@ -93,6 +95,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     retry: boolean,
     opts?: { ifExpiredAt?: number; countsAsError?: boolean },
   ): Promise<{ requeued: boolean; applied: boolean }> {
+    if (run.deliveryMode === "remote_once") return { requeued: false, applied: false };
     const ifExpiredAt = opts?.ifExpiredAt ?? null;
     const countsAsError = opts?.countsAsError ?? false;
     const errorAttemptsAfter = run.errorAttempts + (countsAsError ? 1 : 0);
@@ -124,13 +127,13 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
   const runs: RunStore = {
     ...(Number.isFinite(maxClaims) ? { maxClaims } : {}),
 
-    async enqueue({ sessionId, request, dedupKey, maxAttempts = 3 }: EnqueueInput): Promise<EnqueueResult> {
+    async enqueue({ sessionId, request, dedupKey, maxAttempts = 3, deliveryMode = "local" }: EnqueueInput): Promise<EnqueueResult> {
       const id = randomUUID();
       const { rows: inserted } = await q(
-        `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at)
-         VALUES ($1,$2,'pending',$3,$4,0,$5,$6)
+        `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, delivery_mode, created_at)
+         VALUES ($1,$2,'pending',$3,$4,0,$5,$6,$7)
          ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-        [id, sessionId, JSON.stringify(request), dedupKey ?? null, maxAttempts, Date.now()],
+        [id, sessionId, JSON.stringify(request), dedupKey ?? null, maxAttempts, deliveryMode, Date.now()],
       );
       if (inserted[0]) return { run: rowToRun(inserted[0]), deduped: false };
       const { rows } = await q("SELECT * FROM runs WHERE idempotency_key = $1", [dedupKey]);
@@ -145,7 +148,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           `UPDATE runs SET status='running', lease_token=$1, lease_expires_at=$2, worker_id=$3,
              attempts=attempts+1, started_at=COALESCE(started_at,$4)
            WHERE id = (
-             SELECT id FROM runs WHERE status='pending'
+             SELECT id FROM runs WHERE status='pending' AND delivery_mode='local'
                AND session_id NOT IN (SELECT session_id FROM runs WHERE status='running')
              ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING *`,
@@ -166,7 +169,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           `UPDATE runs SET status='running', lease_token=$1, lease_expires_at=$2, worker_id=$3,
              attempts=attempts+1, started_at=COALESCE(started_at,$4)
            WHERE id = (
-             SELECT id FROM runs WHERE id=$5 AND status='pending'
+             SELECT id FROM runs WHERE id=$5 AND status='pending' AND delivery_mode='local'
                AND session_id NOT IN (SELECT session_id FROM runs WHERE status='running')
              FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING *`,
@@ -189,7 +192,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     async releaseLease(runId, leaseToken): Promise<boolean> {
       const { rowCount } = await q(
-        "UPDATE runs SET status='pending', lease_token=NULL, lease_expires_at=NULL, worker_id=NULL WHERE id=$1 AND lease_token=$2 AND status='running'",
+        "UPDATE runs SET status='pending', lease_token=NULL, lease_expires_at=NULL, worker_id=NULL WHERE id=$1 AND lease_token=$2 AND status='running' AND delivery_mode='local'",
         [runId, leaseToken],
       );
       return rowCount > 0;
@@ -255,7 +258,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     ): Promise<{ requeued: number; parked: number }> {
       const now = Date.now();
       const { rows } = await q(
-        "SELECT * FROM runs WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1",
+        "SELECT * FROM runs WHERE status='running' AND delivery_mode='local' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1",
         [now],
       );
       const expired = rows.map(rowToRun);

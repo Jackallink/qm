@@ -23,6 +23,7 @@ function run(over: Partial<Run>): Run {
     id: "r-1",
     sessionId: "s-1",
     status: "done",
+    deliveryMode: "local",
     request: turn("hi", "C9:171.001"),
     result: { status: "ok", reply: "the reply" },
     deliveryState: null,
