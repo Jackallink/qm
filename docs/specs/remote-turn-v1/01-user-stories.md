@@ -18,7 +18,7 @@ Phase 1 is a one-shot protected Remote Turn. It has no Agent management product,
 
 ### US-01: Release-controlled opt-in
 
-As a deployment controller, I can enable one versioned binding for one allowlisted scope only through the durable deployment procedure, so that a browser request, user parameter, cookie, environment default, or admin header cannot turn on a remote runtime.
+As a deployment controller, I can enable one versioned binding for one allowlisted scope only through the durable deployment procedure, so that a browser request, user parameter, cookie, environment default, or admin header cannot turn on a remote runtime. The binding describes a vendor-neutral runtime contract (protocol version, audience, digest, key sets) and never names a vendor implementation; any vendor runtime that meets the contract can be swapped in without a core change — the same pluggability the procurement requires of the execution-engine layer.
 
 Acceptance criteria: RTH-02, RTH-03, RTH-05.
 
