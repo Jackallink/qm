@@ -85,6 +85,34 @@ export const REMOTE_TURN_EVENTS_DDL = `CREATE TABLE IF NOT EXISTS remote_turn_ev
   UNIQUE(remote_turn_id, seq)
 )`;
 
+export const REMOTE_TURN_SESSION_DDL = [
+  `CREATE TABLE IF NOT EXISTS sessions(
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, scope_id TEXT NOT NULL,
+      thread_ref TEXT UNIQUE NOT NULL, created_at BIGINT NOT NULL, title TEXT, channel_name TEXT
+    )`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS surface TEXT`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_activity BIGINT`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS messages INT`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turns INT`,
+  `CREATE TABLE IF NOT EXISTS session_leases(
+      session_id TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at BIGINT NOT NULL
+    )`,
+  `ALTER TABLE session_leases ADD COLUMN IF NOT EXISTS holder TEXT`,
+  `ALTER TABLE session_leases ADD COLUMN IF NOT EXISTS acquired_at BIGINT`,
+] as const;
+
+export const REMOTE_TURN_RUN_DDL = [
+  `CREATE TABLE IF NOT EXISTS runs(
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, status TEXT NOT NULL,
+      request TEXT NOT NULL, result TEXT, idempotency_key TEXT UNIQUE,
+      attempts INT NOT NULL DEFAULT 0, max_attempts INT NOT NULL DEFAULT 3,
+      lease_token TEXT, lease_expires_at BIGINT, worker_id TEXT,
+      created_at BIGINT NOT NULL, started_at BIGINT, finished_at BIGINT
+    )`,
+  `ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery_mode TEXT NOT NULL DEFAULT 'local'`,
+  `ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_attempts INT NOT NULL DEFAULT 0`,
+] as const;
+
 export const REMOTE_TURN_DDL_ALL = [
   REMOTE_RUNTIME_BINDING_DDL,
   REMOTE_TURN_DDL,

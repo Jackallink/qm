@@ -58,6 +58,25 @@ export function rowToSession(r: Record<string, unknown>): Session {
   };
 }
 
+export async function getOrCreateByThreadOn(
+  client: PoolClient,
+  threadRef: string,
+  type: SessionType,
+  scopeId: ScopeId,
+  channelName?: string,
+  surface?: string,
+): Promise<Session> {
+  await client.query(
+    "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at, channel_name, surface, last_activity, messages, turns) VALUES ($1,$2,$3,$4,$5,$6,$7,$5,0,0) ON CONFLICT (thread_ref) DO NOTHING",
+    [randomUUID(), type, scopeId, threadRef, Date.now(), channelName ?? null, surface ?? null],
+  );
+  const { rows } = await client.query("SELECT * FROM sessions WHERE thread_ref = $1 FOR UPDATE", [threadRef]);
+  if (!rows[0]) {
+    throw new Error(`session store failed to resolve thread ${threadRef}`);
+  }
+  return rowToSession(rows[0] as Record<string, unknown>);
+}
+
 function rowToParticipantSession(r: Record<string, unknown>): Session {
   const s = rowToSession(r);
   if (r.p_title != null) s.title = r.p_title as string;
