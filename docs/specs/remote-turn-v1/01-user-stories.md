@@ -9,7 +9,7 @@ Phase 1 is a one-shot protected Remote Turn. It has no Agent management product,
 | Persona | Authority | What it may do in v1 |
 | --- | --- | --- |
 | Deployment controller | mTLS/signed release identity registered in core configuration | Create, enable, disable, or rotate a generic remote-runtime binding through the deployment procedure. |
-| QM user | Current G0-verified designated-entry identity, governance decision, and session membership | Submit a normal text turn; it may be routed remotely only when the server verifies that G0 context. |
+| QM user | Current G0-verified designated-entry identity, governance decision, and session membership | Submit a normal text turn; it may be routed remotely only when the server verifies that G0 context. Request abort for a visible run; the capability reaches the runtime only from core. |
 | Runtime service | Private mTLS/source-auth identity plus a per-turn capability | Claim exactly one lease, execute the fixed protocol, return receipt, and honor abort. |
 | Deployment attestor | Key pinned in the binding | Attest immutable release, sandbox identity, and egress enforcement; prove termination. |
 | Audit operator | Read-only operational database role/procedure | Read the durable Remote Turn/audit chain for an authorized scope; no browser UI is implied. |

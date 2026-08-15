@@ -2,11 +2,11 @@
 
 ## Status
 
-Draft — Gate 1 is not approved. The independent specification audit rejected the earlier draft because the current QM `RunStore`, budget tracker, and audit interfaces do not provide the atomic remote-dispatch, recovery, authorization, or accounting guarantees required here.
+**walkthrough-approved** — 2026-08-15, Gate 1 approval conditions closed in [06-gate1-review.md](./06-gate1-review.md). Implementation starts only after the test matrix in this directory is approved, with red tests for the relevant criteria.
 
 - Audit baseline: `2fbfc00549444ac8cc3977d9e5c6ea9f9f50762d` (2026-08-11)
+- Storage design revision: the draft's D0-T precondition has been exercised per its own revision clause. The storage design is now the named **PostgreSQL reference profile** (the current QM session primitive is PostgreSQL-based), re-audited through the multi-expert walkthrough and Gate 1 review recorded in [06-gate1-review.md](./06-gate1-review.md). D0-L already provides local Docker/Postgres persistence evidence (`d0-local-docker-baseline-v1/05-validation-and-drift.md`). D0-T's remaining role is to prove that the target environment matches this profile's durable transaction, session-binding, locking, migration, recovery, and cross-instance semantics; a mismatch requires a revised, separately audited storage design before Gate 2 completion. A local, memory, or independently committed substitute is not valid.
 - External research is reference material only; it is not implementation evidence.
-- The implementation starts only after the three walkthroughs and the test matrix in this directory are approved, with red tests for the relevant criteria.
 - Before formal Gate 1 approval, the program roadmap's D0-T gate must prove that the approved target environment provides the same durable transaction, session-binding, locking, migration, recovery, and cross-instance semantics required here. If it cannot, this draft must be revised to a named, equivalently tested storage design and re-audited; a local, memory, or independently committed substitute is not valid.
 - Before formal Gate 1 approval, the program roadmap's G0 and X0 gates must supply the designated-entry/governance contract and the reference runtime's attestation/egress/termination proof. This specification defines neither a private governance protocol nor a vendor runtime implementation.
 
@@ -28,7 +28,7 @@ Every remote invocation must have server-derived identity and scope, a durable t
 
 ## Architecture decision
 
-The generic QM core work is a new vendor-neutral **Remote Turn extension**, not a reuse of the present `RunStore` as-is. It requires a transaction-capable `RemoteTurnStore` and budget/audit interfaces in one durable transaction domain. PostgreSQL is the initial reference profile because the current QM session primitive is PostgreSQL-based; D0-T must prove the target environment satisfies the same contract or require a revised, separately audited storage design before Gate 1. The extension owns irreversible remote-dispatch state, replay defense, cancellation, receipt verification, and recovery. The existing `RunStore` may carry the surrounding normal-turn job only after it gains an explicit remote-once recovery policy; its current automatic requeue behavior is not valid for remote dispatch.
+The generic QM core work is a new vendor-neutral **Remote Turn extension**, not a reuse of the present `RunStore` as-is. It requires a transaction-capable `RemoteTurnStore` and budget/audit interfaces in one durable transaction domain. PostgreSQL is the named initial reference profile; the D0-T gate proves the target environment satisfies the same contract, and a mismatch requires a revised, separately audited storage design before Gate 2 completion. The extension owns irreversible remote-dispatch state, replay defense, cancellation, receipt verification, and recovery. The existing `RunStore` may carry the surrounding normal-turn job only after it gains an explicit remote-once recovery policy; its current automatic requeue behavior is not valid for remote dispatch.
 
 A vendor runtime implementation belongs in the chosen private deployment repository under its organization layer. Its binary/image, RPC bridge, provider credential handling, network policy, attestation provider, and operating runbook remain there. This upstream checkout contains only the generic contract and tests. No provider, personal-principal, organization, or egress-specific value belongs in `src/`, shared plugins, generic images, or this upstream specification.
 
@@ -76,7 +76,7 @@ Included:
 ## Phase order
 
 1. **Gate 0 / F0 — Quarantine legacy paths.** Make every legacy experimental remote-runtime selection/construction route unreachable. This isolated safety work may start immediately and may run in parallel with D0-L local Docker planning; it does not enable a new Remote Turn.
-2. **Program prerequisites — D0-L, D0-T, G0, X0.** D0-L first establishes only a reproducible local Docker text baseline. D0-T then completes the target environment contract; G0 completes the designated-entry/governance connection; X0 completes the reference runtime deployment baseline. These gates, together with Gate 0/F0, must all pass before Gate 1 approval, any new Remote Turn implementation, binding enablement, or canary.
+2. **Program prerequisites — D0-L, D0-T, G0, X0.** D0-L first establishes only a reproducible local Docker text baseline and is complete. D0-T then completes the target environment contract (proving the target matches the PostgreSQL reference profile named in this specification); G0 completes the designated-entry/governance connection; X0 completes the reference runtime deployment baseline. D0-L has passed; D0-T, G0, and X0 evidence is required before Gate 2 completion, any new Remote Turn implementation, binding enablement, or canary.
 3. **Gate 1 — Approve this specification.** Approve the contract, state machine, control procedure, error matrix, threat model, AC-to-test matrix, and the program-prerequisite evidence references.
 4. **Gate 2 — Upstream generic extension.** Design and accept the vendor-neutral Remote Turn store/protocol/recovery contract in upstream QM.
 5. **Gate 3 — Private deployment runtime.** After D0-T validates the target deployment/storage contract, build the vendor runtime, immutable release, attestor, egress enforcement, and runbook only in the selected private deployment layer.
@@ -192,3 +192,4 @@ Rollback is a transactional operator procedure: disable the binding; reject new 
 - [Round 3: integration, failure paths, and threat model](./03-integration-errors.md)
 - [Acceptance criteria to test matrix](./04-test-matrix.md)
 - [Protocol schema (normative)](./05-protocol-schema.md)
+- [Gate 1 walkthrough approval record](./06-gate1-review.md)
