@@ -515,7 +515,7 @@ test("claim refuses mismatched attestation and records an attestation_invalid ev
   }
 });
 
-test("claim with a stale version or wrong binding version gets no lease", { skip }, async () => {
+test("claim with a stale version, wrong binding version, or wrong JTI gets no lease", { skip }, async () => {
   const pg = (await import("pg")).default;
   const { store } = await claimStore();
   const p = new pg.Pool({ connectionString: URL });
@@ -547,15 +547,56 @@ test("claim with a stale version or wrong binding version gets no lease", { skip
       runtimeAudience: "urn:qm:v1:runtime:org1:r1",
       version: 1,
     });
-    assert.deepEqual(wrongBinding, { ok: false, reason: "attestation_invalid" });
+    assert.deepEqual(wrongBinding, { ok: false, reason: "no_lease" });
+    const wrongJti = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "c".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: { ...verified, turnJtiHash: "c".repeat(64) },
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(wrongJti, { ok: false, reason: "no_lease" });
+    const { rows: statusRows } = await p.query("SELECT status, execution_lease_hash, version FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(statusRows[0].status, "dispatching");
+    assert.equal(statusRows[0].execution_lease_hash, null);
+    assert.equal(statusRows[0].version, 1);
     const { rows } = await p.query(
-      "SELECT event_type, payload FROM remote_turn_events WHERE remote_turn_id=$1 ORDER BY seq",
+      "SELECT event_type FROM remote_turn_events WHERE remote_turn_id=$1",
       [remoteTurnId],
     );
-    assert.deepEqual(
-      rows.map((r) => [r.event_type, (r.payload as { reason?: string }).reason]),
-      [["attestation_invalid", "binding_version_mismatch"]],
-    );
+    assert.equal(rows.length, 0);
+  } finally {
+    await p.end();
+  }
+});
+
+test("claim refuses an abort-requested turn (abort_before_claim)", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store } = await claimStore();
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    await store.claim({
+      remoteTurnId: randomUUID(),
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(randomUUID(), "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 99,
+    });
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    await p.query("UPDATE remote_turn SET abort_requested_at=$2 WHERE id=$1", [remoteTurnId, 1_800_000_000]);
+    const result = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(remoteTurnId, "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(result, { ok: false, reason: "no_lease" });
+    const { rows: statusRows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(statusRows[0].status, "dispatching");
   } finally {
     await p.end();
   }

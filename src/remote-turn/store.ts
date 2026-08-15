@@ -290,20 +290,12 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       guardClientErrors(client);
       const { rows } = await client.query(
         `UPDATE remote_turn SET status='claimed', execution_lease_hash=$2, version=version+1, updated_at=$3
-         WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$4 AND abort_requested_at IS NULL AND version=$5
+         WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$4 AND abort_requested_at IS NULL AND version=$5 AND binding_version=$6
          RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
-        [input.remoteTurnId, executionLeaseHash, claimedAt, input.turnJtiHash, input.version],
+        [input.remoteTurnId, executionLeaseHash, claimedAt, input.turnJtiHash, input.version, verified.bindingVersion],
       );
       const row = rows[0];
       if (!row) return { ok: false as const, reason: "no_lease" as const };
-
-      if (verified.bindingVersion !== Number(row.binding_version)) {
-        await client.query(
-          "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,$3,$4,$5)",
-          [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), "attestation_invalid", JSON.stringify({ reason: "binding_version_mismatch" }), claimedAt],
-        );
-        return { ok: false as const, reason: "attestation_invalid" as const };
-      }
 
       await client.query(
         "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,$3,$4,$5)",
@@ -344,7 +336,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         );
       });
     } catch {
-      // audit failure must not mask the refusal outcome
+      void 0;
     }
   }
 
