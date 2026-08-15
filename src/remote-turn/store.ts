@@ -70,7 +70,7 @@ export interface DispatchEnvelope {
 
 export type DispatchResult =
   | { ok: true; dispatchAttempt: number; preClaimExpiresAt: number }
-  | { ok: false; reason: "no_lease" | "not_dispatchable" | "envelope_mismatch" };
+  | { ok: false; reason: "no_lease" | "not_dispatchable" | "envelope_mismatch" | "pre_claim_expired" };
 
 export type ExpirePreClaimResult = "expired" | "not_expired" | "not_dispatchable";
 
@@ -83,10 +83,13 @@ export interface RemoteTurnStore {
   claim(input: ClaimInput): Promise<LeaseResult>;
   prepareDispatch(input: { remoteTurnId: string; leaseToken: string; envelope: DispatchEnvelope }): Promise<DispatchResult>;
   expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult>;
+  expireAdmissions(now: number): Promise<number>;
   close(): Promise<void>;
 }
 
-const ADMISSION_WINDOW_MS = 5 * 60_000;
+const ADMISSION_WINDOW_SEC = 5 * 60;
+const ADMISSION_WINDOW_MS = ADMISSION_WINDOW_SEC * 1000;
+const PRE_CLAIM_WINDOW_SEC = 90;
 
 const errorGuardedClients = new WeakSet<PoolClient>();
 
@@ -217,12 +220,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             governance_authorization_digest, governance_decision_id, binding_id, binding_version,
             input_digest, envelope_digest, history_digest, status, version,
             pre_admission_expires_at, correlation_id, created_at, updated_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16,$17,$18,$18)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,
+            (SELECT extract(epoch from transaction_timestamp())) + $16, $17, $18, $18)`,
           [
             remoteTurnId, input.coreRunId, admissionKey, input.conversationKey, input.scopeId, input.actorId,
             session.id, input.g0.governanceAuthorizationDigest, input.g0.governanceDecisionId,
             input.bindingId, bindingVersion, inputDigest, envelopeDigest, historyDigest,
-            "created", t0 + ADMISSION_WINDOW_MS, input.g0.traceId, createdAt,
+            "created", ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
           ],
         );
         await onStep("remote-turn-insert", client);
@@ -367,20 +371,21 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       const status = turn.status as string;
       const storedJtiHash = (turn.turn_jti_hash as string | null) ?? null;
       const storedNonceHash = (turn.attestation_nonce_hash as string | null) ?? null;
+      const nowMs = now();
 
       if (status === "admitted" && storedJtiHash === null) {
-        const nowMs = Date.now();
         const { rows: updated } = await client.query<Record<string, unknown>>(
           `UPDATE remote_turn
            SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3,
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
-               pre_claim_expires_at=$6, version=version+1, updated_at=$5
+               pre_claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) + $6,
+               version=version+1, updated_at=$5
            WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7
            RETURNING version, pre_claim_expires_at, dispatch_attempt`,
           [
             input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
             nowMs,
-            nowMs + 90_000,
+            PRE_CLAIM_WINDOW_SEC,
             Number(turn.version),
           ],
         );
@@ -388,7 +393,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         if (!row) return { ok: false as const, reason: "not_dispatchable" as const };
         await client.query(
           "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,'prepare_dispatch',$3,$4)",
-          [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), JSON.stringify({ dispatchAttempt: 1 }), Date.now()],
+          [input.remoteTurnId, await nextEventSeq(client, input.remoteTurnId), JSON.stringify({ dispatchAttempt: 1 }), nowMs],
         );
         return {
           ok: true as const,
@@ -402,14 +407,18 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           return { ok: false as const, reason: "envelope_mismatch" as const };
         }
         const { rows: bumped } = await client.query<{ dispatch_attempt: number; pre_claim_expires_at: number }>(
-          "UPDATE remote_turn SET dispatch_attempt=dispatch_attempt+1, updated_at=$2 WHERE id=$1 AND status='dispatching' RETURNING dispatch_attempt, pre_claim_expires_at",
-          [input.remoteTurnId, Date.now()],
+          `UPDATE remote_turn SET dispatch_attempt=dispatch_attempt+1, updated_at=$2
+           WHERE id=$1 AND status='dispatching'
+             AND (SELECT extract(epoch from transaction_timestamp())) <= pre_claim_expires_at
+           RETURNING dispatch_attempt, pre_claim_expires_at`,
+          [input.remoteTurnId, nowMs],
         );
         const row = bumped[0];
+        if (!row) return { ok: false as const, reason: "pre_claim_expired" as const };
         return {
           ok: true as const,
-          dispatchAttempt: row ? row.dispatch_attempt : 1,
-          preClaimExpiresAt: Number(turn.pre_claim_expires_at),
+          dispatchAttempt: row.dispatch_attempt,
+          preClaimExpiresAt: Number(row.pre_claim_expires_at),
         };
       }
 
@@ -428,7 +437,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       if (!turn) return "not_dispatchable";
       if (turn.status !== "dispatching") return "not_dispatchable";
       const expiresAt = Number(turn.pre_claim_expires_at);
-      if (now < expiresAt) return "not_expired";
+      const nowSec = Math.floor(now / 1000);
+      if (nowSec < expiresAt) return "not_expired";
 
       await client.query(
         "UPDATE remote_turn SET status='failed_pre_dispatch', version=version+1, updated_at=$2 WHERE id=$1 AND status='dispatching'",
@@ -451,18 +461,61 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         [`remote_turn:${remoteTurnId}`],
       );
       const coreRunId = turn.core_run_id as string;
-      const { rowCount } = await client.query(
-        "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='pending'",
-        [coreRunId, now],
-      );
-      if (rowCount !== 1) {
-        await client.query(
-          "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='running'",
-          [coreRunId, now],
-        );
-      }
+      await markRunFailedOnClient(client, coreRunId, now);
       return "expired";
     });
+  }
+
+  async function expireAdmissions(now: number): Promise<number> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query<Record<string, unknown>>(
+        `SELECT id, core_run_id FROM remote_turn
+         WHERE status IN ('created','session_bound','admitted')
+           AND pre_admission_expires_at IS NOT NULL
+           AND pre_admission_expires_at <= $1
+         FOR UPDATE SKIP LOCKED`,
+        [Math.floor(now / 1000)],
+      );
+      for (const turn of rows) {
+        const remoteTurnId = turn.id as string;
+        const coreRunId = turn.core_run_id as string;
+        await client.query(
+          "UPDATE remote_turn SET status='rejected', version=version+1, updated_at=$2 WHERE id=$1 AND status IN ('created','session_bound','admitted')",
+          [remoteTurnId, now],
+        );
+        await client.query(
+          "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,$2,'reject_deadline',$3,$4)",
+          [remoteTurnId, await nextEventSeq(client, remoteTurnId), JSON.stringify({}), now],
+        );
+        const { rows: reservationRows } = await client.query<{ id: string }>(
+          "SELECT id FROM budget_reservations WHERE remote_turn_id=$1",
+          [remoteTurnId],
+        );
+        if (reservationRows[0]) {
+          await ledger.settleReservation(client, { remoteTurnId, trustedUsageUsd: 0, invalidMetering: false });
+        }
+        await client.query(
+          "DELETE FROM session_leases WHERE holder=$1",
+          [`remote_turn:${remoteTurnId}`],
+        );
+        await markRunFailedOnClient(client, coreRunId, now);
+      }
+      return rows.length;
+    });
+  }
+
+  async function markRunFailedOnClient(client: PoolClient, coreRunId: string, finishedAt: number): Promise<void> {
+    const { rowCount } = await client.query(
+      "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='pending'",
+      [coreRunId, finishedAt],
+    );
+    if (rowCount !== 1) {
+      await client.query(
+        "UPDATE runs SET status='failed', finished_at=$2 WHERE id=$1 AND delivery_mode='remote_once' AND status='running'",
+        [coreRunId, finishedAt],
+      );
+    }
   }
 
   async function recordAttestationDenial(remoteTurnId: string): Promise<void> {
@@ -492,6 +545,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     claim,
     prepareDispatch,
     expirePreClaim,
+    expireAdmissions,
     async close(): Promise<void> {
       await pool.close();
     },

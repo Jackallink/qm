@@ -242,11 +242,20 @@ test("expirePreClaim releases reservation and session lease and writes failed_pr
   const store = createRemoteTurnStore(URL!);
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
 
-  const expiredAt = Date.now() + 100_000;
-  const result = await store.expirePreClaim(remoteTurnId, expiredAt);
+  const pg = (await import("pg")).default;
+  const backfill = new pg.Pool({ connectionString: URL! });
+  try {
+    await backfill.query("UPDATE remote_turn SET pre_claim_expires_at=$2 WHERE id=$1", [
+      remoteTurnId,
+      Math.floor(Date.now() / 1000) - 10,
+    ]);
+  } finally {
+    await backfill.end();
+  }
+
+  const result = await store.expirePreClaim(remoteTurnId, Date.now());
   assert.equal(result, "expired");
 
-  const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL! });
   try {
     const turn = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
@@ -268,7 +277,7 @@ test("expirePreClaim on a non-expired or wrong-state turn is a no-op", { skip },
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
   const store = createRemoteTurnStore(URL!);
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
-  const result = await store.expirePreClaim(remoteTurnId, Date.now() - 1000);
+  const result = await store.expirePreClaim(remoteTurnId, Date.now());
   assert.equal(result, "not_expired");
 
   const pg = (await import("pg")).default;
@@ -279,6 +288,119 @@ test("expirePreClaim on a non-expired or wrong-state turn is a no-op", { skip },
   } finally {
     await p.end();
   }
+});
+
+test("resume after the pre-claim deadline is refused with pre_claim_expired", { skip }, async () => {
+  const { remoteTurnId, runLeaseToken } = await admittedTurn();
+  const store = createRemoteTurnStore(URL!);
+  const enc = envelope();
+  await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
+
+  const pg = (await import("pg")).default;
+  const backfill = new pg.Pool({ connectionString: URL! });
+  try {
+    await backfill.query("UPDATE remote_turn SET pre_claim_expires_at=$2 WHERE id=$1", [
+      remoteTurnId,
+      Math.floor(Date.now() / 1000) - 5,
+    ]);
+  } finally {
+    await backfill.end();
+  }
+
+  const result = await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
+  assert.equal(result.ok, false);
+  assert.ok(!result.ok && result.reason === "pre_claim_expired");
+
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const turn = await p.query("SELECT status, dispatch_attempt FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(turn.rows[0].status, "dispatching");
+    assert.equal(turn.rows[0].dispatch_attempt, 1, "resume must not bump the attempt after expiry");
+  } finally {
+    await p.end();
+  }
+});
+
+test("pre-admission deadline sweep rejects created/session_bound/admitted and releases artifacts", { skip }, async () => {
+  const { remoteTurnId, coreRunId, scopeId } = await admittedTurn();
+  const store = createRemoteTurnStore(URL!);
+
+  const pg = (await import("pg")).default;
+  const backfill = new pg.Pool({ connectionString: URL! });
+  try {
+    await backfill.query("UPDATE remote_turn SET pre_admission_expires_at=$2 WHERE id=$1", [
+      remoteTurnId,
+      Math.floor(Date.now() / 1000) - 5,
+    ]);
+  } finally {
+    await backfill.end();
+  }
+
+  const rejected = await store.expireAdmissions(Date.now());
+  assert.equal(rejected, 1);
+
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const turn = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(turn.rows[0].status, "rejected");
+    const reservation = await p.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [remoteTurnId]);
+    assert.equal(reservation.rows.length, 1);
+    assert.equal(reservation.rows[0].status, "released");
+    const lease = await p.query("SELECT * FROM session_leases WHERE holder=$1", [`remote_turn:${remoteTurnId}`]);
+    assert.equal(lease.rows.length, 0);
+    const run = await p.query("SELECT status FROM runs WHERE id=$1", [coreRunId]);
+    assert.equal(run.rows[0].status, "failed");
+  } finally {
+    await p.end();
+  }
+  void scopeId;
+});
+
+test("admission_key partial unique index permits an identical re-send after a terminal state", { skip }, async () => {
+  const { remoteTurnId, coreRunId, runLeaseToken } = await admittedTurn();
+  const store = createRemoteTurnStore(URL!);
+  await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  let admissionKey: string;
+  try {
+    const turn = await p.query("SELECT admission_key FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    admissionKey = turn.rows[0].admission_key as string;
+    await p.query("UPDATE remote_turn SET status='failed_pre_dispatch', turn_jti_hash=NULL WHERE id=$1", [remoteTurnId]);
+  } finally {
+    await p.end();
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const second = {
+    id: randomUUID(),
+    coreRunId: randomUUID(),
+    admissionKey,
+    preAdmissionExpiresAt: nowSec + 300,
+  };
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    await p2.query(
+      `INSERT INTO remote_turn(id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
+        binding_id, binding_version, status, version, pre_admission_expires_at, created_at, updated_at)
+       VALUES($1,$2,$3,'conv-x','scope-x','actor-1','binding-x',1,'created',1,$4,$5,$5)`,
+      [second.id, second.coreRunId, second.admissionKey, second.preAdmissionExpiresAt, nowSec],
+    );
+    await assert.rejects(
+      p2.query(
+        `INSERT INTO remote_turn(id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
+          binding_id, binding_version, status, version, pre_admission_expires_at, created_at, updated_at)
+         VALUES($1,$2,$3,'conv-y','scope-y','actor-1','binding-y',1,'created',1,$4,$5,$5)`,
+        [randomUUID(), randomUUID(), second.admissionKey, nowSec + 300, nowSec],
+      ),
+      /duplicate key|unique/i,
+      "an active row with the same admission_key must be rejected",
+    );
+  } finally {
+    await p2.end();
+  }
+  void coreRunId;
 });
 
 test("cross-instance: two independent pools see the persisted dispatch and cannot mint a second JTI", { skip }, async () => {
