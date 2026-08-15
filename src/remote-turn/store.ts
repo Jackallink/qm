@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { sharedPgPool, withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
 import { REMOTE_TURN_DDL_ALL, REMOTE_TURN_RUN_DDL, REMOTE_TURN_SESSION_DDL } from "./schema.ts";
@@ -7,6 +6,8 @@ import { nextState, type RemoteTurnStatus } from "./state-machine.ts";
 import { deriveWindowAnchorMs, createRemoteBudgetLedger, type RemoteBudgetLedger } from "./budget-ledger.ts";
 import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest, type RemoteTurnHistoryMessage } from "./envelope.ts";
 import { getOrCreateByThreadOn } from "../sessions/postgres-session-store.ts";
+import { csprngHex, mintAbortToken, sha256Hex } from "./tokens.ts";
+import type { PreClaimClaims } from "./attestation.ts";
 
 export interface G0Context {
   actorId: string;
@@ -50,10 +51,24 @@ export interface RemoteTurnStoreOptions {
   now?: () => number;
   onStep?: OnStep;
   leaseTtlMs?: number;
+  abortKey?: { kid: string; privateKeyPem: string };
 }
+
+export interface ClaimInput {
+  remoteTurnId: string;
+  turnJtiHash: string;
+  attestationNonceHash: string;
+  verifiedPreClaim: PreClaimClaims | null;
+  runtimeAudience: string;
+}
+
+export type LeaseResult =
+  | { ok: true; executionLeaseHash: string; abortToken: string }
+  | { ok: false; reason: "no_lease" | "attestation_invalid" };
 
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
+  claim(input: ClaimInput): Promise<LeaseResult>;
   close(): Promise<void>;
 }
 
@@ -70,10 +85,6 @@ function guardClientErrors(client: PoolClient): void {
 
 function refusal(reason: RefusalReason): never {
   throw new Error(`remote admission refused: ${reason}`);
-}
-
-function sha256Hex(input: string): string {
-  return createHash("sha256").update(input).digest("hex");
 }
 
 export function createRemoteTurnStore(connectionString: string, opts: RemoteTurnStoreOptions = {}): RemoteTurnStore {
@@ -253,8 +264,67 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return { status: "admitted", remoteTurnId, coreRunId: input.coreRunId, runLeaseToken };
   }
 
+  const abortKey = opts.abortKey ?? null;
+
+  async function claim(input: ClaimInput): Promise<LeaseResult> {
+    if (!abortKey) return { ok: false, reason: "attestation_invalid" };
+    if (!input.verifiedPreClaim) return { ok: false, reason: "attestation_invalid" };
+    if (
+      input.verifiedPreClaim.turnJtiHash !== input.turnJtiHash ||
+      input.verifiedPreClaim.attestationNonceHash !== input.attestationNonceHash
+    ) {
+      return { ok: false, reason: "attestation_invalid" };
+    }
+
+    const executionLease = csprngHex();
+    const executionLeaseHash = sha256Hex(executionLease);
+    const claimedAt = now();
+
+    await pool.pool();
+
+    const result = await withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query(
+        `UPDATE remote_turn SET status='claimed', execution_lease_hash=$2, version=version+1, updated_at=$3
+         WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$4 AND abort_requested_at IS NULL
+         RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
+        [input.remoteTurnId, executionLeaseHash, claimedAt, input.turnJtiHash],
+      );
+      const row = rows[0];
+      if (!row) return { ok: false as const, reason: "no_lease" as const };
+
+      await client.query(
+        "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1,1,$2,$3,$4)",
+        [input.remoteTurnId, "claim", JSON.stringify({ executionLeaseHash }), claimedAt],
+      );
+
+      const abortToken = await mintAbortToken(
+        {
+          kid: abortKey.kid,
+          iss: "urn:qm:core",
+          aud: input.runtimeAudience,
+          iat: claimedAt,
+          nbf: claimedAt,
+          exp: claimedAt + 90,
+          jti: csprngHex(),
+          capability: "abort",
+          remoteTurnId: input.remoteTurnId,
+          bindingVersion: Number(row.binding_version),
+          turnJtiHash: input.turnJtiHash,
+          protocolVersion: 1,
+          executionLeaseHash,
+          coreRunId: row.core_run_id as string,
+        },
+        abortKey,
+      );
+      return { ok: true as const, executionLeaseHash, abortToken };
+    });
+    return result;
+  }
+
   return {
     admit,
+    claim,
     async close(): Promise<void> {
       await pool.close();
     },
