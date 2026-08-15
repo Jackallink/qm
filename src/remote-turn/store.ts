@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { sharedPgPool, withPgTransaction, type PgPool, type Rows } from "../persistence/pg-pool.ts";
+import { sharedPgPool, withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
 import { REMOTE_TURN_DDL_ALL, REMOTE_TURN_RUN_DDL, REMOTE_TURN_SESSION_DDL } from "./schema.ts";
 import { nextState, type RemoteTurnStatus } from "./state-machine.ts";
 import { deriveWindowAnchorMs, createRemoteBudgetLedger, type RemoteBudgetLedger } from "./budget-ledger.ts";
-import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest } from "./envelope.ts";
+import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest, type RemoteTurnHistoryMessage } from "./envelope.ts";
 import { getOrCreateByThreadOn } from "../sessions/postgres-session-store.ts";
 
 export interface G0Context {
@@ -15,11 +15,6 @@ export interface G0Context {
   governanceDecisionId: string;
   governanceAuthorizationDigest: string;
   traceId: string;
-}
-
-export interface RemoteTurnHistoryMessage {
-  role: "user" | "assistant";
-  text: string;
 }
 
 export interface AdmitInput {
@@ -39,7 +34,8 @@ export type RefusalReason =
   | "runtime_not_enabled"
   | "remote_input_invalid"
   | "remote_turn_active"
-  | "budget_insufficient";
+  | "budget_insufficient"
+  | "remote_run_exists";
 
 export type AdmitResult =
   | { status: "admitted"; remoteTurnId: string; coreRunId: string; runLeaseToken: string }
@@ -115,17 +111,16 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     const { rowCount: runInserted } = await pool.query(
       `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at)
        VALUES ($1,$2,'pending',$3,NULL,0,3,'remote_once',$4,$5,$6)
-       ON CONFLICT (idempotency_key) DO NOTHING`,
+       ON CONFLICT (id) DO NOTHING`,
       [input.coreRunId, input.threadRef, JSON.stringify({ text: input.text }), runLeaseToken, t0 + ADMISSION_WINDOW_MS, t0],
     );
     if (runInserted !== 1) {
-      throw new Error(`remote run row already exists for ${input.coreRunId}`);
+      return { status: "refused", reason: "remote_run_exists" };
     }
 
     let refusalReason: RefusalReason | null = null;
-    let admitted = false;
     try {
-      admitted = await withPgTransaction(await pool.pool(), async (client) => {
+      await withPgTransaction(await pool.pool(), async (client) => {
         guardClientErrors(client);
         const { rows: bindingRows } = await client.query<Record<string, unknown>>(
           `SELECT id, version, enabled, allowed_scope_id, max_input_bytes, max_history_messages, budget_ceiling_usd
@@ -155,7 +150,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           client,
           input.threadRef,
           "dm",
-          input.scopeId as never,
+          input.scopeId,
           undefined,
           "web",
         );
@@ -262,7 +257,6 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     admit,
     async close(): Promise<void> {
       await pool.close();
-      await ledger.touch();
     },
   };
 }

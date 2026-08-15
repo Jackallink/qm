@@ -222,6 +222,62 @@ test("concurrent admission on the same thread serializes: one admitted, one remo
   assert.ok(refused && refused.reason === "remote_turn_active", JSON.stringify(results));
 });
 
+test("admission with non-empty history persists a multi-frame history digest and envelope digest", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const history = [
+    { role: "user" as const, text: "first question" },
+    { role: "assistant" as const, text: "first answer" },
+    { role: "user" as const, text: "second question" },
+  ];
+  const input = admitInput({ bindingId, scopeId, history });
+  const result = await store.admit(input);
+  assert.equal(result.status, "admitted");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const turn = await p.query("SELECT history_digest, envelope_digest FROM remote_turn WHERE id=$1", [
+      result.status === "admitted" ? result.remoteTurnId : "",
+    ]);
+    assert.equal(turn.rows.length, 1);
+    const expectedHistory = computeHistoryDigest(history);
+    assert.equal(turn.rows[0].history_digest, expectedHistory);
+    const sessionId = (await p.query("SELECT id FROM sessions WHERE thread_ref=$1", [input.threadRef])).rows[0].id;
+    assert.equal(
+      turn.rows[0].envelope_digest,
+      computeEnvelopeDigest({
+        remoteTurnId: result.status === "admitted" ? result.remoteTurnId : "",
+        bindingVersion: 1,
+        conversationKey: input.conversationKey,
+        scopeId: input.scopeId,
+        qmSessionId: sessionId as string,
+        coreRunId: input.coreRunId,
+        inputDigest: computeInputDigest(input.text),
+        historyDigest: expectedHistory,
+      }),
+    );
+    const q1 = history[0];
+    const a1 = history[1];
+    const q2 = history[2];
+    assert.ok(q1 && a1 && q2);
+    const sameButReordered: typeof history = [q2, q1, a1];
+    assert.notEqual(computeHistoryDigest(sameButReordered), expectedHistory, "history digest must be order-sensitive");
+  } finally {
+    await p.end();
+  }
+});
+
+test("duplicate coreRunId is refused with a clean typed result, not a raw error", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const sharedThread = `web:actor-1:thread-${randomUUID()}`;
+  const coreRunId = randomUUID();
+  const first = await store.admit(admitInput({ bindingId, scopeId, coreRunId, threadRef: sharedThread }));
+  assert.equal(first.status, "admitted");
+  const second = await store.admit(admitInput({ bindingId, scopeId, coreRunId, threadRef: `web:actor-1:thread-${randomUUID()}` }));
+  assert.equal(second.status, "refused");
+});
+
 for (const label of ["session-bound", "remote-turn-insert", "reservation+audit", "pre-commit"] as const) {
   test(`crash at onStep '${label}' leaves no in-transaction artifacts`, { skip }, async () => {
     const { bindingId, scopeId } = await freshBinding();
