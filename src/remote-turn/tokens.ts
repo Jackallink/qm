@@ -235,6 +235,101 @@ export async function mintAbortToken(payload: AbortClaims, key: SigningKey): Pro
   return signJws(withKid, key);
 }
 
+export interface ReceiptClaims {
+  artifact: "receipt";
+  schemaVersion: number;
+  remoteTurnId: string;
+  bindingVersion: number;
+  executionLeaseHash: string;
+  inputDigest: string;
+  releaseDigest: string;
+  status: "completed";
+  reply: string;
+  outputBytes: number;
+  runtimeMs: number;
+  receivedAt: number;
+}
+
+export interface ReceiptExpected {
+  remoteTurnId: string;
+  bindingVersion: number;
+  executionLeaseHash: string;
+  inputDigest: string;
+  releaseDigest: string;
+  now: number;
+}
+
+const RECEIPT_CLAIM_KEYS = new Set([
+  "artifact", "schemaVersion", "remoteTurnId", "bindingVersion", "executionLeaseHash",
+  "inputDigest", "releaseDigest", "status", "reply", "outputBytes", "runtimeMs", "receivedAt",
+]);
+
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function isReceiptClaims(value: unknown): value is ReceiptClaims {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!RECEIPT_CLAIM_KEYS.has(key)) return false;
+  }
+  if (record.artifact !== "receipt") return false;
+  if (record.status !== "completed") return false;
+  if (typeof record.schemaVersion !== "number" || record.schemaVersion < 1) return false;
+  if (typeof record.remoteTurnId !== "string" || !UUID_PATTERN.test(record.remoteTurnId)) return false;
+  if (typeof record.bindingVersion !== "number" || record.bindingVersion < 1) return false;
+  if (typeof record.executionLeaseHash !== "string" || !SHA256_PATTERN.test(record.executionLeaseHash)) return false;
+  if (typeof record.inputDigest !== "string" || !SHA256_PATTERN.test(record.inputDigest)) return false;
+  if (typeof record.releaseDigest !== "string" || !SHA256_PATTERN.test(record.releaseDigest)) return false;
+  if (typeof record.reply !== "string") return false;
+  if (Buffer.byteLength(record.reply, "utf8") > 16384) return false;
+  if (typeof record.outputBytes !== "number" || !Number.isInteger(record.outputBytes) || record.outputBytes < 0 || record.outputBytes > 16384) return false;
+  if (typeof record.runtimeMs !== "number" || !Number.isInteger(record.runtimeMs) || record.runtimeMs < 0 || record.runtimeMs > 60000) return false;
+  if (typeof record.receivedAt !== "number" || !Number.isInteger(record.receivedAt)) return false;
+  return true;
+}
+
+function receiptExpectedMatches(claims: ReceiptClaims, expected: ReceiptExpected): boolean {
+  return (
+    claims.remoteTurnId === expected.remoteTurnId &&
+    claims.bindingVersion === expected.bindingVersion &&
+    claims.executionLeaseHash === expected.executionLeaseHash &&
+    claims.inputDigest === expected.inputDigest &&
+    claims.releaseDigest === expected.releaseDigest
+  );
+}
+
+export async function verifyReceipt(
+  token: string,
+  keys: CoreTokenKeySet,
+  expected: ReceiptExpected,
+): Promise<ReceiptClaims | null> {
+  if (token.split(".").length !== 3) return null;
+  let headerKid: string | undefined;
+  try {
+    const header = decodeProtectedHeader(token);
+    if (header.alg !== "EdDSA") return null;
+    headerKid = header.kid;
+  } catch {
+    return null;
+  }
+  if (headerKid === undefined) return null;
+  const entry = keys.find((k) => k.kid === headerKid);
+  if (!entry || !entryActive(entry, expected.now)) return null;
+  const key = await loadKey(headerKid, keys);
+  if (!key) return null;
+  let payload: unknown;
+  try {
+    const result = await compactVerify(token, key, { algorithms: ["EdDSA"] });
+    payload = JSON.parse(new TextDecoder().decode(result.payload));
+  } catch {
+    return null;
+  }
+  if (!isReceiptClaims(payload)) return null;
+  if (!receiptExpectedMatches(payload, expected)) return null;
+  return payload;
+}
+
 export async function verifyAbortToken(
   token: string,
   keys: CoreTokenKeySet,
