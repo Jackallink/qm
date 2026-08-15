@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CliError, bold, die, dim, errMessage, header, note, ok, step, warn } from "../log.ts";
@@ -12,6 +13,7 @@ import {
   resolveBuildRepoRoot,
   runInherit,
   sleep,
+  sourceBuildInfo,
   streamLabeled,
   tailString,
   which,
@@ -28,15 +30,40 @@ import {
   type LogOpts,
   type ServiceName,
 } from "../services.ts";
-import { dockerBasePort, sandboxCoreEnv, securityScreenEnv, type QmConfig } from "../config.ts";
+import {
+  LOCAL_DOCKER_HOST_ONLY_ENV_NAMES,
+  dockerPostgresImage,
+  dockerBasePort,
+  isLocalDockerTextOnlyProfile,
+  isSandboxDisabled,
+  sandboxCoreEnv,
+  securityScreenEnv,
+  type QmConfig,
+  validateLocalDockerTextOnlyProfile,
+} from "../config.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
 import { computedSecrets, runtimeSecretNames, secretsForService } from "../secrets.ts";
-import { readDeploymentState, withDeploymentLock, writeDeploymentState, type DeploymentState } from "../state.ts";
+import {
+  readDeploymentState,
+  withDeploymentLock,
+  writeDeploymentState,
+  type DeploymentImageEvidence,
+  type DeploymentState,
+} from "../state.ts";
 
 const safe = (s: string): string => s.replace(/[^A-Za-z0-9_.-]/g, "-");
 const ORG_LABEL_KEY = "qm.org";
+const localDockerHostOnlyEnvNames = new Set(LOCAL_DOCKER_HOST_ONLY_ENV_NAMES);
+const localDockerDistinctSecretNames = [
+  "CAPABILITY_SECRET",
+  "CORE_SIGNING_SECRET",
+  "PORTAL_IDENTITY_SECRET",
+  "CONNECTOR_SECRET_KEY",
+] as const;
 const orgLabelArgs = (ctx: DockerCtx): string[] => ["--label", `${ORG_LABEL_KEY}=${ctx.config.orgId}`];
 const baseHostPort = (ctx: DockerCtx): number => dockerBasePort(ctx.config);
+type Ipv6Probe = (port: number) => Promise<boolean>;
+type LoopbackHealthProbe = (url: string) => Promise<boolean>;
 
 interface DockerCtx {
   config: QmConfig;
@@ -52,6 +79,10 @@ interface DockerCtx {
   missingSandboxSecrets: string[];
   buildFrom: boolean;
   repoRoot?: string;
+  buildInfo?: { gitCommit?: string; dirty?: boolean };
+  fetchImpl: typeof fetch;
+  ipv6Probe: Ipv6Probe;
+  loopbackHealthProbe: LoopbackHealthProbe;
 }
 
 const dockerPrefix = (config: QmConfig): string => `qm-${safe(config.orgId)}`;
@@ -65,6 +96,14 @@ function requireDocker(): void {
   } catch {
     die("the Docker daemon is not reachable — start Docker (or OrbStack) and retry.");
   }
+}
+
+function assertLocalDockerDaemon(config: QmConfig): void {
+  if (!isLocalDockerTextOnlyProfile(config)) return;
+  const configuredHost = process.env.DOCKER_HOST?.trim();
+  const host = configuredHost || docker(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]).trim();
+  if (host.startsWith("unix://") || host.startsWith("npipe://")) return;
+  throw new CliError("local Docker text-only profile requires a local Docker daemon over a Unix socket or named pipe");
 }
 
 function docker(args: string[], allow?: RegExp): string {
@@ -151,6 +190,88 @@ function resolveImage(ctx: DockerCtx, service: ServiceName): string {
   return ref;
 }
 
+function containerImageContentId(name: string): string {
+  const id = docker(["inspect", "--format", "{{.Image}}", name]).trim();
+  if (!/^sha256:[a-f0-9]{64}$/.test(id)) {
+    throw new CliError(`docker container ${name} did not report an image content ID`);
+  }
+  return id;
+}
+
+function imageDigestFromReference(image: string): string | undefined {
+  return image.match(/@(?<digest>sha256:[a-f0-9]{64})$/)?.groups?.digest;
+}
+
+function imageRepoDigests(imageId: string): string[] {
+  const raw = docker(["image", "inspect", "--format", "{{json .RepoDigests}}", imageId]).trim();
+  let values: unknown;
+  try {
+    values = JSON.parse(raw);
+  } catch {
+    throw new CliError(`docker image ${imageId} did not report repository digests`);
+  }
+  if (values === null) return [];
+  if (!Array.isArray(values)) throw new CliError(`docker image ${imageId} did not report repository digests`);
+  return values
+    .filter((value): value is string => typeof value === "string")
+    .flatMap((value) => {
+      const digest = imageDigestFromReference(value);
+      return digest ? [digest] : [];
+    });
+}
+
+function dockerImageEvidence(ctx: DockerCtx, service: string, image: string): DeploymentImageEvidence {
+  const imageId = containerImageContentId(cname(ctx, service));
+  if (ctx.buildFrom && service !== "pg") {
+    const build = ctx.buildInfo;
+    if (!ctx.repoRoot) {
+      throw new CliError("local Docker text-only source builds require Git HEAD and dirty-state evidence");
+    }
+    if (isLocalDockerTextOnlyProfile(ctx.config) && (!build?.gitCommit || build.dirty === undefined)) {
+      throw new CliError("local Docker text-only source builds require Git HEAD and dirty-state evidence");
+    }
+    return {
+      kind: "build-from",
+      source: ctx.repoRoot,
+      imageId,
+      ...(build?.gitCommit ? { gitCommit: build.gitCommit } : {}),
+      ...(build?.dirty === undefined ? {} : { dirty: build.dirty }),
+    };
+  }
+  const source = image;
+  const configuredDigest = imageDigestFromReference(source);
+  const actualDigests = imageRepoDigests(imageId);
+  if (isLocalDockerTextOnlyProfile(ctx.config) && configuredDigest && !actualDigests.includes(configuredDigest)) {
+    throw new CliError(`docker container ${cname(ctx, service)} does not match its required image digest`);
+  }
+  const releaseDigest = configuredDigest ?? actualDigests[0];
+  if (isLocalDockerTextOnlyProfile(ctx.config) && !releaseDigest) {
+    throw new CliError(
+      `local Docker text-only profile requires ${service} to use a digest-pinned release image, or run with --build-from`,
+    );
+  }
+  return {
+    kind: "release",
+    source,
+    imageId,
+    ...(releaseDigest ? { releaseDigest } : {}),
+  };
+}
+
+function recordDockerImageEvidence(
+  ctx: DockerCtx,
+  service: string,
+  evidence: DeploymentImageEvidence,
+): void {
+  const state = readDeploymentState(ctx.config.orgId);
+  writeDeploymentState({
+    ...state,
+    orgId: ctx.config.orgId,
+    network: ctx.network,
+    images: { ...(state?.images ?? {}), [service]: evidence },
+  });
+}
+
 function resolvePluginImage(ctx: DockerCtx, p: ResolvedPlugin): string {
   if (p.kind === "source") {
     const tag = `${ctx.prefix}-${p.name}:local`;
@@ -183,10 +304,11 @@ function ensurePostgres(ctx: DockerCtx, dryRun: boolean): string {
   }
 
   const pgName = cname(ctx, "pg");
+  const image = dockerPostgresImage(ctx.config);
   const url = (password: string): string => `postgres://postgres:${password}@pg:5432/qm`;
 
   if (dryRun) {
-    step(`Postgres: would run ${pgName} (image postgres:16, volume ${pgVolume(ctx)})`);
+    step(`Postgres: would run ${pgName} (image ${image}, volume ${pgVolume(ctx)})`);
     return url(readDeploymentState(ctx.config.orgId)?.pgPassword ?? "<generated>");
   }
   return withDeploymentLock(ctx.config.orgId, () => {
@@ -207,7 +329,7 @@ function ensurePostgres(ctx: DockerCtx, dryRun: boolean): string {
       password = state?.pgPassword ?? randomBytes(16).toString("hex");
     }
 
-    const stateOut: DeploymentState = { orgId: ctx.config.orgId, network: ctx.network, pgPassword: password };
+    const stateOut: DeploymentState = { ...state, orgId: ctx.config.orgId, network: ctx.network, pgPassword: password };
     writeDeploymentState(stateOut);
 
     if (!containerRunning(pgName)) {
@@ -233,7 +355,7 @@ function ensurePostgres(ctx: DockerCtx, dryRun: boolean): string {
           "POSTGRES_DB=qm",
           "-v",
           `${pgVolume(ctx)}:/var/lib/postgresql/data`,
-          "postgres:16",
+          image,
         ]);
       } finally {
         secretFile.cleanup();
@@ -265,6 +387,11 @@ function secretValues(ctx: DockerCtx, service: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const secret of secretsForService(ctx.config, service)) {
     if (secret.managedBy === "terraform" && service === "core") continue;
+    if (
+      isLocalDockerTextOnlyProfile(ctx.config) && localDockerHostOnlyEnvNames.has(secret.name)
+    ) {
+      continue;
+    }
     const fileValue = readEnvValue(ctx.envFile, secret.name);
     const value = deploymentSecretValue(secret.name, fileValue);
     if (value === undefined) continue;
@@ -314,8 +441,10 @@ function serviceEnv(ctx: DockerCtx, service: ServiceName): Record<string, string
     out.DATABASE_URL = ctx.databaseUrl;
     if (config.model) out.PI_MODEL = config.model;
     if (config.modelProvider) out.MODEL_PROVIDER = config.modelProvider;
-    const layerSubs = existingLayerSubdirs(ctx);
-    if (layerSubs.length) out.DEPLOYMENT_LAYER = "/layer";
+    if (!isSandboxDisabled(config)) {
+      const layerSubs = existingLayerSubdirs(ctx);
+      if (layerSubs.length) out.DEPLOYMENT_LAYER = "/layer";
+    }
     Object.assign(out, ctx.sandboxEnv);
   } else {
     Object.assign(out, dockerServiceEnv(config, service));
@@ -331,6 +460,10 @@ function serviceEnv(ctx: DockerCtx, service: ServiceName): Record<string, string
   if (ctx.signingSecret) env.CORE_SIGNING_SECRET = ctx.signingSecret;
   if (service === "core") {
     env.DATABASE_URL = ctx.databaseUrl;
+    if (config.sandbox?.backend === "disabled") {
+      env.SANDBOX_BACKEND = "disabled";
+      delete env.SANDBOX_SECONDARY_BACKEND;
+    }
     for (const key of ctx.sandboxSecretKeys) {
       const value = out[key];
       if (value !== undefined) env[key] = value;
@@ -401,11 +534,13 @@ function runArgs(ctx: DockerCtx, service: ServiceName, image: string): { args: s
   const cleanup = pushEnvArgs(args, serviceEnv(ctx, service), secretEnvKeys(ctx, service));
   if (service === "core") {
     args.push("-v", `${ctx.prefix}-coredata:/data`);
-    for (const m of layerMounts(ctx)) args.push("-v", m);
-    for (const m of skillMounts(ctx)) args.push("-v", m);
+    if (!isSandboxDisabled(ctx.config)) {
+      for (const m of layerMounts(ctx)) args.push("-v", m);
+      for (const m of skillMounts(ctx)) args.push("-v", m);
+    }
   }
   if (def.docker.hostPortOffset !== undefined) {
-    args.push("-p", `${baseHostPort(ctx) + def.docker.hostPortOffset}:${def.docker.internalPort}`);
+    args.push("-p", `127.0.0.1:${baseHostPort(ctx) + def.docker.hostPortOffset}:${def.docker.internalPort}`);
   }
   args.push(image);
   return { args, cleanup };
@@ -428,22 +563,144 @@ function noteLogTail(name: string, logs: string): void {
   note(tailString(logs, 25));
 }
 
+export function defaultLoopbackHealthProbe(url: string): Promise<boolean> {
+  const target = new URL(url);
+  const port = Number(target.port);
+  if (
+    target.protocol !== "http:" ||
+    target.hostname !== "127.0.0.1" ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let socket: ReturnType<typeof connect> | undefined;
+    const finish = (healthy: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket?.removeAllListeners();
+      socket?.destroy();
+      resolve(healthy);
+    };
+    let response = "";
+    try {
+      socket = connect({ host: "127.0.0.1", port, family: 4 });
+      socket.once("connect", () => {
+        socket?.write(
+          `GET ${target.pathname}${target.search} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`,
+        );
+      });
+      socket.on("data", (chunk: Buffer) => {
+        response += chunk.toString("latin1");
+        const end = response.indexOf("\r\n");
+        if (end === -1) return;
+        finish(/^HTTP\/1\.[01] 2\d\d(?:\s|$)/.test(response.slice(0, end)));
+      });
+      socket.once("error", () => finish(false));
+      socket.once("close", () => finish(false));
+      socket.setTimeout(2_000, () => finish(false));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
   const def = serviceDef(service);
   const name = cname(ctx, service);
+  const hostPort = def.docker.hostPortOffset === undefined ? undefined : baseHostPort(ctx) + def.docker.hostPortOffset;
+  const healthUrl = hostPort === undefined ? undefined : `http://127.0.0.1:${hostPort}/healthz`;
   for (let i = 0; i < 90; i++) {
-    const logs = captureBoth("docker", ["logs", name]);
-    if (def.readiness.test(logs)) {
+    try {
+      if (healthUrl) {
+        if (isLocalDockerTextOnlyProfile(ctx.config)) {
+          if (!(await ctx.loopbackHealthProbe(healthUrl))) throw new Error("loopback health probe failed");
+        } else {
+          const response = await ctx.fetchImpl(healthUrl, { signal: AbortSignal.timeout(2_000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        }
+      } else {
+        docker([
+          "exec",
+          name,
+          "node",
+          "--input-type=module",
+          "-e",
+          "const response = await fetch('http://127.0.0.1:8080/healthz'); process.exit(response.ok ? 0 : 1)",
+        ]);
+      }
       persistRestart(name);
       return;
+    } catch {
+      void 0;
     }
     if (!containerRunning(name)) {
-      noteLogTail(name, logs);
+      noteLogTail(name, captureBoth("docker", ["logs", name]));
       throw new CliError(`${service} exited before becoming ready (see logs above)`);
     }
     await sleep(1000);
   }
-  throw new CliError(`${service} did not become ready in 90s`);
+  throw new CliError(
+    `${service} did not respond successfully to ${healthUrl ?? "its internal /healthz endpoint"} in 90s`,
+  );
+}
+
+export function defaultIpv6Probe(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let socket: ReturnType<typeof connect> | undefined;
+    const finish = (reachable: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket?.removeAllListeners();
+      socket?.destroy();
+      resolve(reachable);
+    };
+    try {
+      socket = connect({ host: "::1", port, family: 6 });
+      socket.once("connect", () => finish(true));
+      socket.once("error", () => finish(false));
+      socket.setTimeout(2_000, () => finish(false));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function assertLocalDockerLoopbackPublish(ctx: DockerCtx, service: ServiceName): Promise<void> {
+  if (!isLocalDockerTextOnlyProfile(ctx.config)) return;
+  const def = serviceDef(service);
+  if (def.docker.hostPortOffset === undefined) return;
+  const hostPort = baseHostPort(ctx) + def.docker.hostPortOffset;
+  const raw = docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", cname(ctx, service)]);
+  let ports: unknown;
+  try {
+    ports = JSON.parse(raw);
+  } catch {
+    throw new CliError(`docker inspect returned invalid published-port data for ${service}`);
+  }
+  const bindings =
+    typeof ports === "object" && ports !== null
+      ? (ports as Record<string, unknown>)[`${def.docker.internalPort}/tcp`]
+      : undefined;
+  if (!Array.isArray(bindings) || bindings.length !== 1) {
+    throw new CliError(`docker inspect did not report one published loopback port for ${service}`);
+  }
+  const binding = bindings[0];
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    (binding as Record<string, unknown>).HostIp !== "127.0.0.1" ||
+    (binding as Record<string, unknown>).HostPort !== String(hostPort)
+  ) {
+    throw new CliError(`docker inspect shows ${service} is not published only as 127.0.0.1:${hostPort}`);
+  }
+  if (await ctx.ipv6Probe(hostPort)) {
+    throw new CliError(`local Docker text-only profile unexpectedly accepts IPv6 connections on [::1]:${hostPort}`);
+  }
 }
 
 async function waitPluginUp(name: string): Promise<void> {
@@ -460,7 +717,15 @@ async function waitPluginUp(name: string): Promise<void> {
 function buildCtx(
   config: QmConfig,
   configDir: string,
-  opts: { sandboxDir?: string; buildFrom: boolean; buildFromPath?: string; envFile?: string },
+  opts: {
+    sandboxDir?: string;
+    buildFrom: boolean;
+    buildFromPath?: string;
+    envFile?: string;
+    fetchImpl?: typeof fetch;
+    ipv6Probe?: Ipv6Probe;
+    loopbackHealthProbe?: LoopbackHealthProbe;
+  },
 ): DockerCtx {
   const prefix = dockerPrefix(config);
   const envFile = opts.envFile ? resolve(opts.envFile) : join(configDir, ".env");
@@ -476,24 +741,52 @@ function buildCtx(
     sandboxSecretKeys: new Set((config.sandbox?.secretEnv ?? []).map((name) => `FLY_RESIDENT_ENV_${name}`)),
     missingSandboxSecrets: [],
     buildFrom: opts.buildFrom,
+    fetchImpl: opts.fetchImpl ?? fetch,
+    ipv6Probe: opts.ipv6Probe ?? defaultIpv6Probe,
+    loopbackHealthProbe: opts.loopbackHealthProbe ?? defaultLoopbackHealthProbe,
   };
   if (existsSync(envFile)) ctx.envFile = envFile;
+  if (isLocalDockerTextOnlyProfile(config) && externalDatabaseUrl(ctx)) {
+    throw new CliError("local Docker text-only profile does not allow DATABASE_URL; it always starts its local Postgres container");
+  }
   const signingSecret = deploymentSecretValue("CORE_SIGNING_SECRET", readEnvValue(ctx.envFile, "CORE_SIGNING_SECRET"));
   if (signingSecret) ctx.signingSecret = signingSecret;
   const lookup = (name: string): string | undefined => deploymentSecretValue(name, readEnvValue(ctx.envFile, name));
   const sb = sandboxCoreEnv(config, lookup);
   ctx.sandboxEnv = sb.env;
   ctx.missingSandboxSecrets = sb.missingSecrets;
-  if (opts.buildFrom) ctx.repoRoot = resolveBuildRepoRoot(opts.buildFromPath, runnableServices(config.services));
+  if (opts.buildFrom) {
+    ctx.repoRoot = resolveBuildRepoRoot(opts.buildFromPath, runnableServices(config.services));
+    const build = sourceBuildInfo(ctx.repoRoot);
+    if (isLocalDockerTextOnlyProfile(config) && (!build.gitCommit || build.dirty === undefined)) {
+      throw new CliError("local Docker text-only source builds require a Git checkout with readable HEAD and dirty state");
+    }
+    ctx.buildInfo = build;
+  }
   return ctx;
+}
+
+function assertLocalDockerTextOnlySecretSeparation(ctx: DockerCtx): void {
+  if (!isLocalDockerTextOnlyProfile(ctx.config)) return;
+  const namesByValue = new Map<string, string[]>();
+  for (const name of localDockerDistinctSecretNames) {
+    const value = deploymentSecretValue(name, readEnvValue(ctx.envFile, name))?.trim();
+    if (!value) continue;
+    namesByValue.set(value, [...(namesByValue.get(value) ?? []), name]);
+  }
+  const reused = [...namesByValue.values()].find((names) => names.length > 1);
+  if (reused) {
+    throw new CliError(`local Docker text-only profile requires distinct secret values for ${reused.join(", ")}`);
+  }
 }
 
 function warnUnforwardedEnvKeys(ctx: DockerCtx): void {
   if (!ctx.envFile) return;
   const injected = new Set(computedSecrets(ctx.config).map((secret) => secret.name));
+  const blocked = isLocalDockerTextOnlyProfile(ctx.config) ? localDockerHostOnlyEnvNames : new Set<string>();
   injected.add("CORE_SIGNING_SECRET");
   injected.add("DATABASE_URL");
-  const dropped = [...readEnvFile(ctx.envFile).keys()].filter((key) => !injected.has(key));
+  const dropped = [...readEnvFile(ctx.envFile).keys()].filter((key) => blocked.has(key) || !injected.has(key));
   if (!dropped.length) return;
   warn(
     `.env keys not forwarded to any container: ${dropped.join(", ")} — only computed secret names are ` +
@@ -514,16 +807,37 @@ function missingRequiredOperatorSecrets(ctx: DockerCtx): string[] {
 export async function dockerUp(
   config: QmConfig,
   configDir: string,
-  opts: { sandboxDir?: string; buildFrom?: boolean; buildFromPath?: string; envFile?: string; dryRun?: boolean } = {},
+  opts: {
+    sandboxDir?: string;
+    buildFrom?: boolean;
+    buildFromPath?: string;
+    envFile?: string;
+    dryRun?: boolean;
+    fetchImpl?: typeof fetch;
+    ipv6Probe?: Ipv6Probe;
+    loopbackHealthProbe?: LoopbackHealthProbe;
+  } = {},
 ): Promise<void> {
+  validateLocalDockerTextOnlyProfile(config, "local Docker configuration");
   if (!opts.dryRun) requireDocker();
+  if (!opts.dryRun) assertLocalDockerDaemon(config);
   const ctx = buildCtx(config, configDir, {
     sandboxDir: opts.sandboxDir,
     buildFrom: opts.buildFrom ?? false,
     buildFromPath: opts.buildFromPath,
     envFile: opts.envFile,
+    fetchImpl: opts.fetchImpl,
+    ipv6Probe: opts.ipv6Probe,
+    loopbackHealthProbe: opts.loopbackHealthProbe,
   });
+  assertLocalDockerTextOnlySecretSeparation(ctx);
   const plugins = discoverPlugins(configDir, config).plugins;
+  if (isSandboxDisabled(config) && plugins.length) {
+    throw new CliError("a disabled sandbox does not allow plugins");
+  }
+  if (isSandboxDisabled(config) && existingLayerSubdirs(ctx).length) {
+    throw new CliError("a disabled sandbox does not allow a sandbox layer");
+  }
 
   header(`qm up — ${config.orgId} (target: docker${opts.buildFrom ? ", build-from-source" : ""})`);
   if (opts.dryRun) note(bold("DRY RUN — no containers will be started.\n"));
@@ -547,10 +861,13 @@ export async function dockerUp(
       );
       note(`     env: ${Object.keys(serviceEnv(ctx, def.name)).join(", ") || "(none)"}`);
       if (def.name === "core") {
-        const subs = existingLayerSubdirs(ctx);
-        note(
-          `     layer: ${subs.length ? `${ctx.sandboxDir} → /layer (${subs.join(", ")})` : `(no skills/ or tools/ in ${ctx.sandboxDir})`}`,
-        );
+        if (isSandboxDisabled(config)) note("     layer: disabled");
+        else {
+          const subs = existingLayerSubdirs(ctx);
+          note(
+            `     layer: ${subs.length ? `${ctx.sandboxDir} → /layer (${subs.join(", ")})` : `(no skills/ or tools/ in ${ctx.sandboxDir})`}`,
+          );
+        }
       }
     }
     for (const p of plugins) {
@@ -573,7 +890,10 @@ export async function dockerUp(
 
   ensureNetwork(ctx);
   ctx.databaseUrl = ensurePostgres(ctx, false);
-  if (!externalDatabaseUrl(ctx)) await waitPostgres(ctx);
+  if (!externalDatabaseUrl(ctx)) {
+    await waitPostgres(ctx);
+    recordDockerImageEvidence(ctx, "pg", dockerImageEvidence(ctx, "pg", dockerPostgresImage(config)));
+  }
 
   for (const def of ordered(runnableServices(config.services))) {
     const image = resolveImage(ctx, def.name);
@@ -586,7 +906,12 @@ export async function dockerUp(
       run.cleanup();
     }
     await waitReady(ctx, def.name);
+    await assertLocalDockerLoopbackPublish(ctx, def.name);
+    recordDockerImageEvidence(ctx, def.name, dockerImageEvidence(ctx, def.name, image));
     ok(`${def.name} ready`);
+    if (isLocalDockerTextOnlyProfile(config)) {
+      note(`     loopback: 127.0.0.1:${baseHostPort(ctx) + def.docker.hostPortOffset!}; [::1] not listening`);
+    }
   }
 
   for (const p of plugins) {
@@ -636,8 +961,10 @@ function printUrls(ctx: DockerCtx): void {
   ok(`stack up — ${ctx.config.orgId}`);
   const has = (s: ServiceName): boolean => ctx.config.services.includes(s);
   const url = (s: ServiceName): string =>
-    `http://localhost:${baseHostPort(ctx) + serviceDef(s).docker.hostPortOffset!}`;
-  if (has("portal")) note(`   portal : ${url("portal")}  (public front door)`);
+    `http://127.0.0.1:${baseHostPort(ctx) + serviceDef(s).docker.hostPortOffset!}`;
+  if (has("portal")) {
+    note(`   portal : ${url("portal")}  (${isLocalDockerTextOnlyProfile(ctx.config) ? "health-only" : "public front door"})`);
+  }
   if (has("auth"))
     note(`   auth   : ${url("portal")}/idp/authorize  (sign-in broker, published only through the portal)`);
   if (has("web-ui")) note(`   web-ui : ${url("web-ui")}`);
@@ -648,6 +975,7 @@ function printUrls(ctx: DockerCtx): void {
 
 export function dockerStatus(config: QmConfig): void {
   requireDocker();
+  assertLocalDockerDaemon(config);
   header(`qm status — ${config.orgId}`);
   dockerInherit([
     "ps",
@@ -655,8 +983,29 @@ export function dockerStatus(config: QmConfig): void {
     "--filter",
     `label=${ORG_LABEL_KEY}=${config.orgId}`,
     "--format",
-    "table {{.Names}}\t{{.Status}}\t{{.Ports}}",
+    "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
   ]);
+  const names = listDeploymentContainers(config.orgId);
+  if (names.length) {
+    note("image content IDs:");
+    for (const name of names) note(`   ${name}: ${docker(["inspect", "--format", "{{.Image}}", name]).trim()}`);
+  }
+  const prefix = dockerPrefix(config);
+  note("volumes:");
+  for (const name of [`${prefix}-pgdata`, `${prefix}-coredata`]) {
+    note(`   ${name}: ${volumeExists(name) ? "present" : "absent"}`);
+  }
+  const evidence = readDeploymentState(config.orgId)?.images;
+  if (evidence && Object.keys(evidence).length) {
+    note("recorded image evidence:");
+    for (const [service, image] of Object.entries(evidence).sort(([a], [b]) => a.localeCompare(b))) {
+      const provenance =
+        image.kind === "build-from"
+          ? `build ${image.gitCommit}${image.dirty ? " (dirty)" : ""}`
+          : `release ${image.releaseDigest ?? image.source}`;
+      note(`   ${service}: ${provenance}; content ${image.imageId}`);
+    }
+  }
   if (config.services.includes("slack")) note("slack: virtual service running in the core container");
 }
 
@@ -673,6 +1022,7 @@ function listDeploymentContainers(orgId: string): string[] {
 
 export async function dockerLogs(config: QmConfig, service: string | undefined, opts: LogOpts = {}): Promise<void> {
   requireDocker();
+  assertLocalDockerDaemon(config);
   const prefix = dockerPrefix(config);
   const tail = String(opts.tail ?? 200);
 
@@ -706,6 +1056,7 @@ function streamPrefixedLogs(names: string[], prefix: string, opts: { follow: boo
 
 export async function dockerDown(config: QmConfig, opts: { purge?: boolean } = {}): Promise<void> {
   requireDocker();
+  assertLocalDockerDaemon(config);
   const prefix = dockerPrefix(config);
   header(`qm down — ${config.orgId}`);
   const serviceNames = teardownOrdered(runnableServices(config.services)).map((d) => `${prefix}-${d.name}`);
