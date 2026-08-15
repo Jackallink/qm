@@ -68,6 +68,7 @@ export const REMOTE_TURN_DDL = `CREATE TABLE IF NOT EXISTS remote_turn(
   receipt_digest TEXT,
   trusted_usage_digest TEXT,
   usage_settlement_id TEXT,
+  receipt_key_snapshot JSONB,
   termination_proof_digest TEXT,
   correlation_id TEXT,
   created_at BIGINT NOT NULL,

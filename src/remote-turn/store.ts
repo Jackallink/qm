@@ -196,13 +196,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       await withPgTransaction(await pool.pool(), async (client) => {
         guardClientErrors(client);
         const { rows: bindingRows } = await client.query<Record<string, unknown>>(
-          `SELECT id, version, enabled, allowed_scope_id, max_input_bytes, max_history_messages, budget_ceiling_usd, release_digest
+          `SELECT id, version, enabled, allowed_scope_id, max_input_bytes, max_history_messages, budget_ceiling_usd, release_digest, key_sets
            FROM remote_runtime_binding WHERE id=$1 FOR UPDATE`,
           [input.bindingId],
         );
         const binding = bindingRows[0];
         if (!binding || !binding.enabled) refusal("runtime_not_enabled");
         if (binding!.allowed_scope_id !== input.scopeId) refusal("runtime_not_enabled");
+        const keySets = (binding!.key_sets as Record<string, KeySetEntry[]> | null) ?? {};
+        const receiptKeySnapshot = keySets.receipt ?? [];
 
         if (
           input.g0.actorId !== input.actorId ||
@@ -263,15 +265,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           `INSERT INTO remote_turn(
             id, core_run_id, admission_key, conversation_key, scope_id, actor_id, qm_session_id,
             governance_authorization_digest, governance_decision_id, binding_id, binding_version,
-            input_digest, envelope_digest, history_digest, release_digest, status, version,
+            input_digest, envelope_digest, history_digest, release_digest, receipt_key_snapshot, status, version,
             pre_admission_expires_at, correlation_id, created_at, updated_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1,
-            (SELECT extract(epoch from transaction_timestamp())) + $17, $18, $19, $19)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,1,
+            (SELECT extract(epoch from transaction_timestamp())) + $18, $19, $20, $20)`,
           [
             remoteTurnId, input.coreRunId, admissionKey, input.conversationKey, input.scopeId, input.actorId,
             session.id, input.g0.governanceAuthorizationDigest, input.g0.governanceDecisionId,
             input.bindingId, bindingVersion, inputDigest, envelopeDigest, historyDigest,
-            binding!.release_digest as string, "created", ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
+            binding!.release_digest as string, JSON.stringify(receiptKeySnapshot), "created", ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
           ],
         );
         await onStep("remote-turn-insert", client);
@@ -618,7 +620,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   ): Promise<Record<string, unknown> | null> {
     const { rows } = await client.query<Record<string, unknown>>(
       `SELECT id, status, core_run_id, qm_session_id, binding_id, binding_version, turn_jti_hash, execution_lease_hash,
-              input_digest, release_digest, workload_identity, planned_sandbox_id, reply, output_bytes
+              input_digest, release_digest, workload_identity, planned_sandbox_id, reply, output_bytes, receipt_key_snapshot
        FROM remote_turn WHERE id=$1 FOR UPDATE`,
       [remoteTurnId],
     );
@@ -630,8 +632,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return binding?.attestorKeys ?? [];
   }
 
-  async function bindingReceiptKeys(bindingId: string): Promise<KeySetEntry[]> {
-    const binding = await bindingStore.getBinding(bindingId);
+  async function bindingReceiptKeysSnapshot(turn: Record<string, unknown>): Promise<KeySetEntry[]> {
+    const snapshot = turn.receipt_key_snapshot as unknown;
+    if (Array.isArray(snapshot)) return snapshot as KeySetEntry[];
+    const binding = await bindingStore.getBinding(turn.binding_id as string);
     return binding?.receiptKeys ?? [];
   }
 
@@ -671,8 +675,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const turn = await readTurn(client, input.remoteTurnId);
-      if (!turn || turn.status !== "executing") return { ok: false as const, reason: "not_receivable" as const };
-      const receiptKeys = await bindingReceiptKeys(turn.binding_id as string);
+      if (!turn) return { ok: false as const, reason: "not_receivable" as const };
+      if (turn.status !== "executing") {
+        const late = turn.status === "completed" || turn.status === "cancelled";
+        await writeEvent(client, input.remoteTurnId, "duplicate_receipt", {
+          reason: late ? "late_post_terminal" : "out_of_order",
+        });
+        return { ok: false as const, reason: "not_receivable" as const };
+      }
+      const receiptKeys = await bindingReceiptKeysSnapshot(turn);
       const verified = await verifyReceipt(input.receiptToken, receiptKeys, {
         remoteTurnId: input.remoteTurnId,
         bindingVersion: Number(turn.binding_version),
@@ -682,8 +693,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         now: now(),
       });
       if (!verified) {
-        await advanceState(client, input.remoteTurnId, "executing", "park");
-        await writeEvent(client, input.remoteTurnId, "park", { reason: "receipt_unverified" });
+        const parked = await advanceState(client, input.remoteTurnId, "executing", "park");
+        if (parked) await writeEvent(client, input.remoteTurnId, "park", { reason: "receipt_unverified" });
         return { ok: false as const, reason: "receipt_invalid" as const };
       }
       const advanced = await advanceState(client, input.remoteTurnId, "executing", "receipt");
@@ -708,8 +719,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         invalidMetering: input.invalidMetering,
       });
       if (input.invalidMetering || settlement === "parked") {
-        await advanceState(client, input.remoteTurnId, "reply_received", "park");
-        await writeEvent(client, input.remoteTurnId, "park", { reason: "metering_invalid" });
+        const parked = await advanceState(client, input.remoteTurnId, "reply_received", "park");
+        if (parked) await writeEvent(client, input.remoteTurnId, "park", { reason: "metering_invalid" });
         return "parked" as const;
       }
       const advanced = await advanceState(client, input.remoteTurnId, "reply_received", "teardown");
@@ -726,52 +737,46 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     if (!input.evidence.sandboxDeleted || !input.evidence.egressRevoked) {
       await withPgTransaction(await pool.pool(), async (client) => {
         guardClientErrors(client);
-        await advanceState(client, input.remoteTurnId, "teardown_pending", "park");
-        await writeEvent(client, input.remoteTurnId, "park", { reason: "termination_unverified" });
+        const parked = await advanceState(client, input.remoteTurnId, "teardown_pending", "park");
+        if (parked) await writeEvent(client, input.remoteTurnId, "park", { reason: "termination_unverified" });
       });
       return "parked";
     }
-    let runId: string | null = null;
-    let runLeaseToken: string | null = null;
-    let reply = "";
-    let sessionId: string | null = null;
-    const completed = await withPgTransaction(await pool.pool(), async (client) => {
+    const result = await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const turn = await readTurn(client, input.remoteTurnId);
-      if (!turn || turn.status !== "teardown_pending") return false;
-      runId = turn.core_run_id as string;
-      reply = (turn.reply as string | null) ?? "";
-      sessionId = (turn.qm_session_id as string | null) ?? null;
+      if (!turn || turn.status !== "teardown_pending") return "not_ready" as const;
+      const runId = turn.core_run_id as string;
+      const reply = (turn.reply as string | null) ?? "";
+      const sessionId = (turn.qm_session_id as string | null) ?? undefined;
       await client.query(
         "UPDATE remote_turn SET status='completed', termination_proof_digest=$2, version=version+1, updated_at=$3 WHERE id=$1 AND status='teardown_pending'",
         [input.remoteTurnId, sha256Hex(input.evidence.proofDigest), now()],
       );
       await writeEvent(client, input.remoteTurnId, "complete", { proofDigest: sha256Hex(input.evidence.proofDigest) });
-      if (runId) {
-        const { rows } = await client.query<{ lease_token: string | null }>(
-          "SELECT lease_token FROM runs WHERE id=$1",
-          [runId],
-        );
-        runLeaseToken = rows[0]?.lease_token ?? null;
-      }
-      return true;
-    });
-    if (!completed) return "not_ready";
-    if (runId && runLeaseToken) {
-      const ok = await runs.complete(runId, runLeaseToken, {
+      const { rows } = await client.query<{ lease_token: string | null }>(
+        "SELECT lease_token FROM runs WHERE id=$1",
+        [runId],
+      );
+      const runLeaseToken = rows[0]?.lease_token ?? null;
+      if (!runLeaseToken) throw new Error(`remote turn ${input.remoteTurnId} completed but no run lease was found`);
+      const completed = await runs.completeOn(client, runId, runLeaseToken, {
         status: "ok",
         reply,
-        sessionId: sessionId ?? undefined,
+        ...(sessionId ? { sessionId } : {}),
       } as TurnResult);
-      if (!ok) {
+      if (!completed) {
         throw new Error(
           `remote turn ${input.remoteTurnId} completed but its run ${runId} could not be completed (lease/status mismatch)`,
         );
       }
-    } else {
-      throw new Error(`remote turn ${input.remoteTurnId} completed but no run lease was found`);
-    }
-    return "completed";
+      await client.query(
+        "DELETE FROM session_leases WHERE holder=$1",
+        [`remote_turn:${input.remoteTurnId}`],
+      );
+      return "completed" as const;
+    });
+    return result;
   }
 
   return {

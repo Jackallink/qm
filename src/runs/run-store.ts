@@ -68,7 +68,11 @@ export interface RunStore {
 
   complete(runId: string, leaseToken: string, result: TurnResult): Promise<boolean>;
 
+  completeOn(client: import("pg").PoolClient, runId: string, leaseToken: string, result: TurnResult): Promise<boolean>;
+
   fail(runId: string, leaseToken: string, error: string, opts?: { retry?: boolean }): Promise<{ requeued: boolean }>;
+
+  failOn(client: import("pg").PoolClient, runId: string, leaseToken: string, error: string): Promise<boolean>;
 
   setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean>;
 

@@ -676,3 +676,74 @@ test("cross-instance: two pools share the receipt and teardown chain", { skip },
   await storeA.close();
   await storeB.close();
 });
+
+test("receipt with mismatched input or release digest parks the turn", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  await startTurn(prepared);
+  const wrongInput = await prepared.receipt.sign({
+    ...receiptPayload({}, "b".repeat(64)),
+    remoteTurnId,
+    executionLeaseHash: prepared.executionLeaseHash,
+  });
+  const rejected = await store.receiveReceipt({ remoteTurnId, receiptToken: wrongInput });
+  assert.equal(rejected.ok, false);
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "parked", "input-digest mismatch must park");
+  } finally {
+    await p.end();
+  }
+
+  const other = await prepareTurn();
+  await startTurn(other);
+  const wrongRelease = await other.receipt.sign({
+    ...receiptPayload({ releaseDigest: "b".repeat(64) }, computeInputDigest("hello remote")),
+    remoteTurnId: other.remoteTurnId,
+    executionLeaseHash: other.executionLeaseHash,
+  });
+  const rejected2 = await other.store.receiveReceipt({ remoteTurnId: other.remoteTurnId, receiptToken: wrongRelease });
+  assert.equal(rejected2.ok, false);
+  const p2 = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p2.query("SELECT status FROM remote_turn WHERE id=$1", [other.remoteTurnId]);
+    assert.equal(rows[0].status, "parked", "release-digest mismatch must park");
+  } finally {
+    await p2.end();
+  }
+});
+
+test("late receipt after completion records a duplicate_receipt audit event without changing state", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  await startTurn(prepared);
+  const valid = await prepared.receipt.sign({
+    ...receiptPayload({}, computeInputDigest("hello remote")),
+    remoteTurnId,
+    executionLeaseHash: prepared.executionLeaseHash,
+  });
+  await store.receiveReceipt({ remoteTurnId, receiptToken: valid });
+  await store.beginTeardown({ remoteTurnId, trustedUsageUsd: 0.1, invalidMetering: false });
+  await store.completeTeardown({
+    remoteTurnId,
+    evidence: { sandboxDeleted: true, egressRevoked: true, proofDigest: "d".repeat(64) },
+  });
+
+  const late = await store.receiveReceipt({ remoteTurnId, receiptToken: valid });
+  assert.equal(late.ok, false);
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const status = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(status.rows[0].status, "completed", "a late receipt must not rewrite the terminal state");
+    const events = await p.query(
+      "SELECT event_type FROM remote_turn_events WHERE remote_turn_id=$1 AND event_type='duplicate_receipt'",
+      [remoteTurnId],
+    );
+    assert.equal(events.rows.length, 1, "the late receipt must be durably audited");
+  } finally {
+    await p.end();
+  }
+});

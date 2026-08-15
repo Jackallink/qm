@@ -122,10 +122,26 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       return true;
     },
 
+    async completeOn(_client, runId, leaseToken, result) {
+      return this.complete(runId, leaseToken, result);
+    },
+
     async fail(runId, leaseToken, error, opts) {
       const run = runs.get(runId);
       if (!run || run.leaseToken !== leaseToken) return { requeued: false };
       return { requeued: retire(run, error, opts?.retry !== false, { countsAsError: true }).requeued };
+    },
+
+    async failOn(_client, runId, leaseToken, error) {
+      const run = runs.get(runId);
+      if (!run || run.leaseToken !== leaseToken) return false;
+      run.status = "failed";
+      run.result = { status: "failed", reply: undefined, reason: error };
+      run.leaseToken = null;
+      run.leaseExpiresAt = null;
+      run.finishedAt = Date.now();
+      settle(run);
+      return true;
     },
 
     async setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState) {
