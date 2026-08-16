@@ -7,9 +7,10 @@ COPY aws/microvm-agent/agent.mjs /opt/microvm-agent/agent.mjs
 COPY prime-extensions /opt/prime-agent/extensions
 
 # prime-agent runtime (self-contained bundle; build context "prime" = the
-# prime-agent checkout, see scripts/sandbox-local-build-with-prime.sh)
-COPY --from=prime /packages/coding-agent/dist /opt/prime-agent/dist
-COPY --from=prime /packages/coding-agent/package.json /opt/prime-agent/package.json
+# prime-agent npm package directory, e.g.
+# $(dirname $(which prime-agent))/../lib/node_modules/prime-agent)
+COPY --from=prime /dist /opt/prime-agent/dist
+COPY --from=prime /package.json /opt/prime-agent/package.json
 RUN ln -sf /opt/prime-agent/dist/bundle/cli.js /usr/local/bin/prime-agent \
   && chmod +x /usr/local/bin/prime-agent \
   && mkdir -p /opt/prime-ext && cd /opt/prime-ext \
