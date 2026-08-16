@@ -93,15 +93,22 @@ function isTurnClaims(value: unknown): value is TurnClaims {
     typeof record.nbf === "number" &&
     typeof record.exp === "number" &&
     typeof record.jti === "string" &&
+    record.jti.length >= 16 &&
     typeof record.remoteTurnId === "string" &&
+    UUID_PATTERN.test(record.remoteTurnId) &&
     typeof record.bindingVersion === "number" &&
+    record.bindingVersion >= 1 &&
     typeof record.conversationKey === "string" &&
     typeof record.scopeId === "string" &&
     typeof record.qmSessionId === "string" &&
+    UUID_PATTERN.test(record.qmSessionId) &&
     typeof record.coreRunId === "string" &&
     typeof record.inputDigest === "string" &&
+    SHA256_PATTERN.test(record.inputDigest) &&
     typeof record.envelopeDigest === "string" &&
-    typeof record.protocolVersion === "number"
+    SHA256_PATTERN.test(record.envelopeDigest) &&
+    typeof record.protocolVersion === "number" &&
+    record.protocolVersion >= 1
   );
 }
 
@@ -223,10 +230,18 @@ function isAbortClaims(value: unknown): value is AbortClaims {
     typeof record.nbf === "number" &&
     typeof record.exp === "number" &&
     typeof record.jti === "string" &&
+    record.jti.length >= 16 &&
     typeof record.remoteTurnId === "string" &&
+    UUID_PATTERN.test(record.remoteTurnId) &&
     typeof record.bindingVersion === "number" &&
+    record.bindingVersion >= 1 &&
     typeof record.turnJtiHash === "string" &&
-    typeof record.protocolVersion === "number"
+    SHA256_PATTERN.test(record.turnJtiHash) &&
+    typeof record.protocolVersion === "number" &&
+    record.protocolVersion >= 1 &&
+    (record.executionLeaseHash === undefined ||
+      (typeof record.executionLeaseHash === "string" && SHA256_PATTERN.test(record.executionLeaseHash))) &&
+    (record.coreRunId === undefined || typeof record.coreRunId === "string")
   );
 }
 
@@ -353,6 +368,7 @@ export async function verifyAbortToken(
     if (claims.executionLeaseHash !== turnState.persistedExecutionLeaseHash) return null;
   } else {
     if (claims.executionLeaseHash !== undefined) return null;
+    if (claims.coreRunId !== undefined) return null;
   }
   return claims;
 }
