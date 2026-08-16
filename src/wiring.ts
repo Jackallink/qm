@@ -189,6 +189,7 @@ import { createRemoteBindingStore, type RemoteBindingStore } from "./remote-turn
 import { createAttestationVerifier } from "./remote-turn/attestation.ts";
 import { createTransportAuth, type TransportAuthVerifier } from "./remote-turn/transport-auth.ts";
 import { createRemoteTurnKeyProvider } from "./remote-turn/tokens.ts";
+import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
 import { createRemoteTurnTransport } from "./remote-turn/transport.ts";
 import { createG0Verifier } from "./remote-turn/g0-verifier.ts";
 import { createRemoteTurnReconciler, type RemoteTurnReconciler } from "./remote-turn/reconciler.ts";
@@ -860,6 +861,31 @@ export function buildApp(
                   if (g.scope === "always") return true;
                   return g.scope === "session" && g.sessionId === sessionId;
                 });
+              },
+              autoRefine: {
+                interval: 5,
+                onSkill: async (scope: string, skill: { name: string; description: string; body: string }) => {
+                  const secret = config.signingSecret;
+                  if (!secret) return;
+                  const principalId = scope.startsWith("personal:")
+                    ? scope.slice("personal:".length)
+                    : "system:prime";
+                  const body = JSON.stringify({
+                    principalId,
+                    scopeId: scope,
+                    name: skill.name,
+                    description: skill.description,
+                    body: skill.body,
+                  });
+                  const headers = signedHeaders(secret, "POST", "/v1/skills", body);
+                  await fetch(`${config.apiBaseUrl ?? "http://localhost:8081"}/v1/skills`, {
+                    method: "POST",
+                    headers,
+                    body,
+                  }).catch((e: unknown) =>
+                    console.error(`[prime-harness] skill import failed: ${(e as Error).message.slice(0, 120)}`),
+                  );
+                },
               },
             }),
           ] as const,

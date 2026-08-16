@@ -90,8 +90,8 @@ export interface PrimeHarnessOptions {
   autoRefine?: {
     /** Trigger a refine every N turns per scope. */
     interval: number;
-    /** Called for each skill entry discovered. */
-    onSkill: (skill: { name: string; description: string; body: string }) => Promise<void>;
+    /** Called for each skill entry discovered; scope is the turn's scope. */
+    onSkill: (scope: ScopeId, skill: { name: string; description: string; body: string }) => Promise<void>;
   };
 }
 
@@ -274,7 +274,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
         const name = (s.title ?? "skill").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 60);
         const description = String(s.metadata?.description ?? s.title ?? "").slice(0, 200);
         const body = s.content;
-        await opts.autoRefine.onSkill({ name, description, body }).catch(() => undefined);
+        await opts.autoRefine.onSkill(scope, { name, description, body }).catch(() => undefined);
         console.error(`[prime-harness] autoRefine: imported skill "${name}" (${body.length} chars)`);
       }
     } catch (e) {
