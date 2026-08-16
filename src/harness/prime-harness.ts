@@ -249,8 +249,10 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   /** Auto-refine: trigger /refine, extract skills, feed to QM skill library. */
   const triggerAutoRefine = async (scope: ScopeId, client: PrimeRpcClient): Promise<void> => {
     if (!opts.autoRefine) return;
+    console.log(`[prime-harness] autoRefine triggered for ${scope}`);
     try {
-      const refineResp = await client.send({ type: "refine" }, { timeoutMs: 600_000 });
+      const refineResp = await client.send({ type: "refine", global: true } as Parameters<typeof client.send>[0], { timeoutMs: 600_000 });
+      console.log(`[prime-harness] refine resp success=${refineResp.success} data=${JSON.stringify(refineResp.data ?? {}).slice(0, 200)}`);
       if (!refineResp.success) return;
       const data = (refineResp.data ?? {}) as { harnessStatePath?: string };
       const statePath = data.harnessStatePath;
@@ -382,7 +384,9 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
           const tc = (turnCounts.get(scope) ?? 0) + 1;
           turnCounts.set(scope, tc);
           if (opts.autoRefine && tc % opts.autoRefine.interval === 0) {
-            void triggerAutoRefine(scope, client).catch(() => undefined);
+            void triggerAutoRefine(scope, client).catch((e: unknown) =>
+              console.error(`[prime-harness] autoRefine trigger failed: ${(e as Error).message.slice(0, 120)}`),
+            );
           }
           return {
             reply,

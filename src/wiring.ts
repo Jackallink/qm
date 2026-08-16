@@ -878,7 +878,7 @@ export function buildApp(
                     body: skill.body,
                   });
                   const headers = signedHeaders(secret, "POST", "/v1/skills", body);
-                  await fetch(`${config.apiBaseUrl ?? "http://localhost:8081"}/v1/skills`, {
+                  await fetch(`http://localhost:${config.port ?? 8081}/v1/skills`, {
                     method: "POST",
                     headers,
                     body,
