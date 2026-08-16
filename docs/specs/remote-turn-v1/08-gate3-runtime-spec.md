@@ -53,7 +53,8 @@ per its own stop condition it is never production proof.
 | Reconciler production wiring (ErrorLog, sweeper start) | core wiring (§5.3) |
 | Transport resolver (envelope/abort actually sent to runtime) | core wiring (§5.4) |
 | Real attestor behind `AttestorGateway.querySandboxState` | attestor service (§3) |
-| Egress token issue/inject/revoke + usage statement | egress gateway (§3.3) |
+| Egress token issue/revoke + usage statement; token-file injection | egress gateway (§3.3) + attestor token-file write (§3.2) |
+| Runtime-facing control endpoints (claim/start-proof/receipt/usage/termination-proof; walkthrough B2) | core wiring (§5.4a) |
 | 07 item 7: denial-audit visibility (`readAuditChain` misses pre-admission refusals) | core wiring: denial events carry `scope_id` and the audit read joins on it (§5.6) |
 | Walkthrough backlog: settle-before-commit race | core wiring (§5.5) |
 | Walkthrough backlog: pool refcount / `remoteTurnStore.close()` in wiring `stop()` | core wiring (§5.3) |
@@ -104,9 +105,10 @@ Trust boundaries (hard invariant 4):
   per-turn sandbox. The runtime never holds Docker credentials and cannot
   create a container the attestor did not measure.
 - **Egress credential lives only in the egress-proxy.** The scoped egress token
-  is minted by the egress gateway, injected into the sandbox by the attestor at
-  creation, and revoked by the gateway on teardown. The runtime never sees a
-  provider API key.
+  is minted by the egress gateway at lease delivery, written into the
+  sandbox's mounted token volume by the attestor before container start, and
+  revoked by the gateway on teardown. The runtime never sees a provider API
+  key.
 - **Runtime is the least-trusted component.** It receives only the bounded
   envelope and turn token; it cannot reach the model endpoint except through
   the egress proxy inside its attested sandbox; its self-report alone never
@@ -139,9 +141,10 @@ network only):
   to core's claim endpoint (§5.4a). On `no_lease`/refusal: typed error, no
   retry. On success: core delivers the execution lease to the attestor, the
   attestor starts the pre-created sandbox (§3.2), and the runtime performs
-  the executor exchange: the bounded text is written to the sandbox's
-  loopback-only executor listener over the per-turn internal network
-  (§3.3's only route), the final reply is read back on the same hop. The
+  the executor exchange: the bounded text is written to the executor
+  listener — reachable only via the proxy's per-turn listener on the
+  per-turn internal network (§3.3's only route) — and the final reply is
+  read back on the same hop. The
   runtime then signs the receipt with the runtime receipt key (Ed25519,
   `kid` ∈ binding `receiptKeys`) and posts it to core's receipt endpoint
   (§5.4a). The reply reaches the user only through core's normal delivery
@@ -177,9 +180,11 @@ Holds the Docker socket and the Ed25519 attestor key (`kid` ∈ binding
   already-created sandbox id (05's normative "sandbox must already exist
   with its isolation verified before this attestation is signed"). Contains
   no execution lease.
-- `POST /lease` — core delivers the raw execution lease here (never via
-  runtime; the claim response carries it exactly once and core persists only
-  its hash, per 05). On receipt: the attestor hashes the lease and verifies
+- `POST /lease` — core delivers the raw execution lease here over this direct
+  mTLS push; the lease is produced exactly once inside the claim transaction
+  and is never contained in the claim response to the runtime, never
+  persisted, never logged — core stores only its hash (05). On receipt: the
+  attestor hashes the lease and verifies
   it against the claim, mints the scoped egress token with the egress
   gateway (the token binds `executionLeaseHash`, which only exists now),
   writes the token into the sandbox's **mounted token volume** (created with
@@ -268,7 +273,9 @@ decision service:
 - One sandbox executor image, pinned by digest (`releaseDigest` in the
   binding). The image contains only the executor (bounded text in → model call
   via injected egress endpoint → bounded text out) and its runtime; no shell,
-  no tools, no extra credentials.
+  no tools, no extra credentials. The executor reads the scoped egress token
+  from `/run/remote-turn/token` (the volume the attestor writes at lease
+  delivery) and presents it to the proxy on every model request.
 - Release process: build → record digest → sign release attestation with
   `releaseAttestationKeyId` → update binding (new binding version) → deploy.
   Rollback = re-enable the previous binding version; core refuses turns whose
@@ -343,10 +350,12 @@ fail-closed:
 - `POST /v1/remote-turn/claim` (runtime→core): { turn token, attestation
   nonce, pre-claim attestation JWS } → verifies the attestation via the
   existing `attestation.ts` verifier against binding `attestorKeys` →
-  `store.claim(...)` (the nonce is bound in the claim CAS). On success the
-  claim response carries the raw execution lease exactly once; core
-  immediately pushes it to the attestor's `POST /lease` (§3.2) itself — the
-  lease never transits the runtime and is never persisted or logged. If the
+  `store.claim(...)` (the nonce is bound in the claim CAS). `store.claim`
+  returns the raw lease to this endpoint handler exactly once (library call,
+  not the HTTP response); the handler immediately pushes it to the
+  attestor's `POST /lease` (§3.2) and answers the runtime with only the
+  lease hash and claim metadata — the lease never transits the runtime and
+  is never persisted or logged. If the
   lease push fails (attestor unreachable), the claimed turn is retried by
   the reconciler's claimed-state sweep with backoff; after
   `REMOTE_TURN_LEASE_PUSH_DEADLINE_MS` (default 60000) without delivery the
