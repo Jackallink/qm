@@ -93,6 +93,10 @@ test("agent management stores are wired and exposed (re-enabled from F0)", async
   }
 });
 
+// emergency/dashboard stay quarantined deliberately: their handlers are
+// audit-only stubs (they return ok without performing the claimed action),
+// which the spec's "no emergency/control endpoint until it performs and
+// proves the action" forbids exposing.
 test("legacy control-plane paths (emergency/dashboard) are absent; agent management routes are present", async () => {
   const legacyRoutes: ReadonlyArray<readonly [string, string]> = [
                                                                                                             ["POST", "/v1/admin/emergency/skills/skill/disable"],
