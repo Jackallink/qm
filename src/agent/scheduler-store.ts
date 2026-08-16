@@ -50,6 +50,7 @@ export function createSchedulerStore(
         sopRunIds: [],
         createdAt: now,
         updatedAt: now,
+        lastRunAt: now,
       };
       await jobs.put(jobKey(job.id), job);
       return job;

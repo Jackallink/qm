@@ -41,9 +41,13 @@ export async function launchAgent(manifest: AgentManifest): Promise<AgentRuntime
   child.on("exit", (code) => { if (code !== 0) console.error(`[launcher] ${manifest.id} exit=${code}`); runningAgents.delete(manifest.id); });
   runningAgents.set(manifest.id, child);
 
-  await new Promise<void>((resolve, reject) => {
-    setTimeout(() => { if (child.exitCode !== null) reject(new Error(`exit ${child.exitCode}`)); else resolve(); }, 2000);
+  const earlyExit = await new Promise<number | null>((resolve) => {
+    setTimeout(() => resolve(child.exitCode), 2000);
   });
+  if (earlyExit !== null) {
+    runningAgents.delete(manifest.id);
+    return { agentId: manifest.id, status: "error", startedAt: Date.now(), errorMessage: `exited early with code ${earlyExit}` };
+  }
 
   return { agentId: manifest.id, status: "online", pid: child.pid!, sessionId: `agent-${manifest.id}-${Date.now().toString(36)}`, startedAt: Date.now() };
 }
