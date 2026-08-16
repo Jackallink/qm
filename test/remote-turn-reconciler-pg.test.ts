@@ -852,10 +852,15 @@ test("reconciler fails orphaned remote_once runs that never admitted", { skip },
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL! });
   const orphanRunId = `orphan-${randomUUID()}`;
+  const pendingOrphanRunId = `orphan-pending-${randomUUID()}`;
   try {
     await p.query(
       "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at) VALUES($1,$2,'running','{}',1,3,'remote_once',$3,$4,$5)",
       [orphanRunId, "session-orphan", randomUUID(), Math.floor(Date.now()) - 1000, Math.floor(Date.now())],
+    );
+    await p.query(
+      "INSERT INTO runs(id, session_id, status, request, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at) VALUES($1,$2,'pending','{}',1,3,'remote_once',$3,$4,$5)",
+      [pendingOrphanRunId, "session-orphan", randomUUID(), Math.floor(Date.now()) - 1000, Math.floor(Date.now())],
     );
   } finally {
     await p.end();
@@ -871,7 +876,9 @@ test("reconciler fails orphaned remote_once runs that never admitted", { skip },
   const p2 = new pg.Pool({ connectionString: URL! });
   try {
     const { rows } = await p2.query("SELECT status FROM runs WHERE id=$1", [orphanRunId]);
-    assert.equal(rows[0].status, "failed", "the orphaned run must be failed");
+    assert.equal(rows[0].status, "failed", "the orphaned running run must be failed");
+    const { rows: pendingRows } = await p2.query("SELECT status FROM runs WHERE id=$1", [pendingOrphanRunId]);
+    assert.equal(pendingRows[0].status, "failed", "the orphaned pending run must be failed");
   } finally {
     await p2.end();
   }

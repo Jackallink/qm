@@ -271,7 +271,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
     const { rowCount: runInserted } = await pool.query(
       `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at)
-       VALUES ($1,$2,'pending',$3,NULL,0,3,'remote_once',$4,$5,$6)
+       VALUES ($1,$2,'pending',$3,NULL,0,3,'remote_once',$4,(SELECT extract(epoch from now()) * 1000 + $5),$6)
        ON CONFLICT (id) DO NOTHING`,
       [input.coreRunId, input.threadRef, JSON.stringify({
         surface: input.surface,
@@ -280,7 +280,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         actor: { id: input.actorId, type: "internal" },
         conversation: { kind: "dm", threadRef: input.threadRef, audience: [{ id: input.actorId, type: "internal" }] },
         origin: { kind: "direct" },
-      }), runLeaseToken, t0 + ADMISSION_WINDOW_MS, t0],
+      }), runLeaseToken, ADMISSION_WINDOW_MS, t0],
     );
     if (runInserted !== 1) {
       await recordDenial(input.coreRunId, "remote_run_exists");
@@ -1072,7 +1072,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   async function listOrphanRuns(): Promise<OrphanRunRecord[]> {
     const { rows } = await pool.query(
       `SELECT r.id, r.lease_token FROM runs r
-       WHERE r.delivery_mode='remote_once' AND r.status='running'
+       WHERE r.delivery_mode='remote_once' AND r.status IN ('pending','running')
          AND NOT EXISTS (SELECT 1 FROM remote_turn t WHERE t.core_run_id = r.id)
          AND r.lease_expires_at IS NOT NULL
          AND r.lease_expires_at <= (SELECT extract(epoch from now()) * 1000)`,
