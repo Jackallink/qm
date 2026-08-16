@@ -165,7 +165,7 @@ test("pre-claim refuses a forged token and enforces the capacity cap", async () 
 });
 
 test("reaper destroys pre-claims that never claim", async () => {
-  const { config: cfg, core, docker } = config({ preClaimReapGraceMs: 0 });
+  const { config: cfg, core, docker } = config({ preClaimReapGraceMs: -1 });
   const attestor = createAttestor(cfg);
   const token = await signedTurnToken(core, cfg.runtimeAudience);
   const pre = await attestor.requestPreClaim({ remoteTurnId: UUID, turnToken: token, attestationNonce: "nonce-1" });
