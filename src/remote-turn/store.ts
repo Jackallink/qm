@@ -935,13 +935,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return { ok: true as const, status: "cancel_requested" as const };
   }
 
-  async function releaseTurnResources(client: PoolClient, remoteTurnId: string): Promise<void> {
+  async function releaseTurnResources(client: PoolClient, remoteTurnId: string, trustedUsageUsd: number | null): Promise<void> {
     const { rows: reservationRows } = await client.query<{ id: string }>(
       "SELECT id FROM budget_reservations WHERE remote_turn_id=$1",
       [remoteTurnId],
     );
     if (reservationRows[0]) {
-      await ledger.settleReservation(client, { remoteTurnId, trustedUsageUsd: 0, invalidMetering: false });
+      await ledger.settleReservation(client, { remoteTurnId, trustedUsageUsd, invalidMetering: false });
     }
     await client.query("DELETE FROM session_leases WHERE holder=$1", [`remote_turn:${remoteTurnId}`]);
   }
@@ -973,7 +973,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       termination: true,
       proofDigest: sha256Hex(evidence.proofDigest),
     });
-    await releaseTurnResources(client, remoteTurnId);
+    await releaseTurnResources(client, remoteTurnId, null);
     await failRemoteRunOnClient(client, turn.core_run_id as string, `remote turn cancelled by ${actor}`);
     return { ok: true as const, status: "cancelled" as const };
   }
@@ -1206,7 +1206,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       );
       if (rowCount !== 1) return { ok: false as const, reason: "not_reconciliable" as const };
       await writeEvent(client, input.remoteTurnId, event, { evidenceDigest: input.evidenceDigest });
-      await releaseTurnResources(client, input.remoteTurnId);
+      await releaseTurnResources(client, input.remoteTurnId, null);
       if (input.outcome === "completed") {
         const runId = turn.core_run_id as string;
         const reply = (turn.reply as string | null) ?? "";

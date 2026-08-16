@@ -12,6 +12,8 @@ export interface SandboxState {
   running: boolean;
   startProofSeen: boolean;
   terminationSeen: boolean;
+  egressRevoked: boolean;
+  terminationProofDigest: string | null;
 }
 
 export interface AttestorGateway {
@@ -99,14 +101,14 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     }
     for (const turn of cancelRequested) {
       const state = await opts.attestor.querySandboxState(turn.remoteTurnId);
-      if (!state.terminationSeen) continue;
+      if (!state.terminationSeen || !state.egressRevoked || !state.terminationProofDigest) continue;
       const result = await opts.store.terminateTurn({
         remoteTurnId: turn.remoteTurnId,
         actor: "remote-turn-reconciler",
         evidence: {
           sandboxDeleted: true,
           egressRevoked: true,
-          proofDigest: `termination:${turn.remoteTurnId}:${nowMs}`,
+          proofDigest: state.terminationProofDigest,
         },
       });
       if (result.ok && result.status === "cancelled") reconciled += 1;

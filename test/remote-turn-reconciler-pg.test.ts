@@ -368,7 +368,7 @@ test("abort during dispatching revokes JTI and refuses a later claim", { skip },
     const reservation = await p2.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [
       admitted.remoteTurnId,
     ]);
-    assert.equal(reservation.rows[0].status, "released", "termination proof must settle the reservation");
+    assert.equal(reservation.rows[0].status, "charged", "termination proof must settle the reservation; a dispatched turn without trusted usage is charged in full");
     const run = await p2.query("SELECT status FROM runs WHERE id=$1", [admitted.coreRunId]);
     assert.equal(run.rows[0].status, "failed", "termination proof must fail the run");
     const turn = await p2.query("SELECT status FROM remote_turn WHERE id=$1", [admitted.remoteTurnId]);
@@ -432,7 +432,7 @@ test("reconciliation moves a parked turn to failed when the attestor proves no s
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -452,7 +452,12 @@ test("reconciliation moves a parked turn to failed when the attestor proves no s
       [prepared.remoteTurnId],
     );
     assert.equal(reservationRows.length, 1, "the reservation must be settled for failed reconciliation");
-    assert.equal(reservationRows[0].status, "released", "full reservation must be released for failed reconciliation");
+    assert.equal(reservationRows[0].status, "charged", "a claimed turn reconciled without trusted usage must be charged in full");
+    const { rows: balanceRows } = await p.query(
+      "SELECT available_usd FROM budget_balances WHERE scope_id=$1",
+      [prepared.scopeId],
+    );
+    assert.equal(Number(balanceRows[0].available_usd), 0, "no top-up may be released without trusted usage");
   } finally {
     await p.end();
   }
@@ -466,7 +471,7 @@ test("reconciliation cannot rewrite a terminal record", { skip }, async () => {
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -493,7 +498,7 @@ test("reconciliation emits a 24h operator alert without auto-charging or releasi
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: true, running: true, startProofSeen: true, terminationSeen: false };
+      return { exists: true, running: true, startProofSeen: true, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const errors = createErrorLog();
@@ -524,7 +529,7 @@ test("concurrent reconciliation CAS lets only one sweeper win", { skip }, async 
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconcilerA = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -639,7 +644,7 @@ test("reconciliation moves a parked turn to completed when the sandbox ran and a
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: true, running: false, startProofSeen: true, terminationSeen: false };
+      return { exists: true, running: false, startProofSeen: true, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
@@ -672,7 +677,7 @@ test("reconciliation moves a parked turn to cancelled when the attestor reports 
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: true, running: false, startProofSeen: true, terminationSeen: true };
+      return { exists: true, running: false, startProofSeen: true, terminationSeen: true, egressRevoked: true, terminationProofDigest: "d".repeat(64) };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -699,7 +704,7 @@ test("reconcile never issues a second execution lease", { skip }, async () => {
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -795,7 +800,7 @@ test("reconciler sweeps expired dispatching turns to failed_pre_dispatch", { ski
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
@@ -831,7 +836,7 @@ test("runtime ceiling sweep times out a claimed turn into cancel_requested and t
 
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: true, running: true, startProofSeen: true, terminationSeen: false };
+      return { exists: true, running: true, startProofSeen: true, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
@@ -871,7 +876,7 @@ test("reconciler fails orphaned remote_once runs that never admitted", { skip },
   }
   const gateway: AttestorGateway = {
     async querySandboxState(_remoteTurnId): Promise<SandboxState> {
-      return { exists: false, running: false, startProofSeen: false, terminationSeen: false };
+      return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
     },
   };
   const reconciler = createRemoteTurnReconciler({ store: prepared.store, attestor: gateway });
@@ -954,6 +959,94 @@ test("deleteSession succeeds for a session whose remote turn completed", { skip 
     await sessions.deleteSession(sessionId);
     const { rows } = await p.query("SELECT id FROM sessions WHERE id=$1", [sessionId]);
     assert.equal(rows.length, 0, "the session must be deleted after its remote turn is terminal");
+  } finally {
+    await p.end();
+  }
+});
+
+test("reconciler refuses to cancel without attestor-reported egress revocation evidence", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
+  assert.ok(abortResult.ok && abortResult.status === "cancel_requested");
+
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: false, running: false, startProofSeen: true, terminationSeen: true, egressRevoked: false, terminationProofDigest: null };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 0, "termination without egress revocation evidence must not cancel");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "cancel_requested", "the turn must stay cancel_requested awaiting revocation evidence");
+  } finally {
+    await p.end();
+  }
+});
+
+test("reconciler cancels on attestor-reported termination plus revocation and records the attestor proof digest", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
+  assert.ok(abortResult.ok && abortResult.status === "cancel_requested");
+
+  const attestorDigest = createHash("sha256").update("attestor-termination-proof").digest("hex");
+  const gateway: AttestorGateway = {
+    async querySandboxState(_remoteTurnId): Promise<SandboxState> {
+      return { exists: false, running: false, startProofSeen: true, terminationSeen: true, egressRevoked: true, terminationProofDigest: attestorDigest };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({ store, attestor: gateway });
+  const result = await reconciler.sweep();
+  assert.equal(result.reconciled, 1);
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "cancelled");
+    const { rows: eventRows } = await p.query(
+      "SELECT payload FROM remote_turn_events WHERE remote_turn_id=$1 AND event_type='complete'",
+      [remoteTurnId],
+    );
+    const payload = typeof eventRows[0].payload === "string" ? JSON.parse(eventRows[0].payload) : eventRows[0].payload;
+    assert.equal(payload.proofDigest, createHash("sha256").update(attestorDigest).digest("hex"), "the recorded digest must be the hash of the attestor-reported digest, never a synthetic one");
+  } finally {
+    await p.end();
+  }
+});
+
+test("terminateTurn charges the full reservation when no trusted usage exists", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId, scopeId } = prepared;
+  const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
+  assert.ok(abortResult.ok && abortResult.status === "cancel_requested");
+  const result = await store.terminateTurn({
+    remoteTurnId,
+    actor: "attestor-ctl",
+    evidence: { sandboxDeleted: true, egressRevoked: true, proofDigest: "f".repeat(64) },
+  });
+  assert.ok(result.ok && result.status === "cancelled");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "cancelled");
+    const { rows: reservationRows } = await p.query(
+      "SELECT status FROM budget_reservations WHERE remote_turn_id=$1",
+      [remoteTurnId],
+    );
+    assert.equal(reservationRows[0].status, "charged", "post-claim cancellation without trusted usage must charge in full");
+    const { rows: balanceRows } = await p.query(
+      "SELECT available_usd FROM budget_balances WHERE scope_id=$1",
+      [scopeId],
+    );
+    assert.equal(Number(balanceRows[0].available_usd), 0, "no top-up may be released on cancellation without trusted usage");
   } finally {
     await p.end();
   }
