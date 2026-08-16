@@ -258,6 +258,8 @@ interface LocalSandboxEnv {
   memoryMb?: number;
   defaultTimeoutSec?: number;
   egressGatewayContainer?: string;
+  egressTls?: { hostname: string; caCertPath: string; hostCaPath?: string };
+  agentProxyUrl?: string;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
@@ -274,6 +276,10 @@ function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
       ? { defaultTimeoutSec: numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) }
       : {}),
     ...(env.LOCAL_SANDBOX_EGRESS_GATEWAY ? { egressGatewayContainer: env.LOCAL_SANDBOX_EGRESS_GATEWAY } : {}),
+    ...(env.LOCAL_SANDBOX_EGRESS_TLS
+      ? { egressTls: JSON.parse(env.LOCAL_SANDBOX_EGRESS_TLS) as { hostname: string; caCertPath: string; hostCaPath?: string } }
+      : {}),
+    ...(env.LOCAL_SANDBOX_AGENT_PROXY_URL ? { agentProxyUrl: env.LOCAL_SANDBOX_AGENT_PROXY_URL } : {}),
   };
 }
 
@@ -295,6 +301,10 @@ function spritesSandboxEnv(env: NodeJS.ProcessEnv): SpritesSandboxEnv {
       ? { defaultTimeoutSec: numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) }
       : {}),
     ...(env.LOCAL_SANDBOX_EGRESS_GATEWAY ? { egressGatewayContainer: env.LOCAL_SANDBOX_EGRESS_GATEWAY } : {}),
+    ...(env.LOCAL_SANDBOX_EGRESS_TLS
+      ? { egressTls: JSON.parse(env.LOCAL_SANDBOX_EGRESS_TLS) as { hostname: string; caCertPath: string; hostCaPath?: string } }
+      : {}),
+    ...(env.LOCAL_SANDBOX_AGENT_PROXY_URL ? { agentProxyUrl: env.LOCAL_SANDBOX_AGENT_PROXY_URL } : {}),
   };
 }
 

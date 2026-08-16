@@ -44,6 +44,19 @@ export interface LocalSandboxOptions {
    * and this gateway container joins them — the sandbox's only network
    * peer is the gateway (egress enforcement shape, mirrors remote-turn). */
   egressGatewayContainer?: string;
+  /** TLS egress for proxy-unaware runtimes (e.g. prime's Node fetch):
+   * hostname → gateway IP redirect plus CA trust. The gateway terminates
+   * TLS, verifies the capability token, and forwards with the provider key.
+   * CA file is bind-mounted; NODE_EXTRA_CA_CERTS makes Node trust it. */
+  egressTls?: {
+    hostname: string;
+    caCertPath: string;
+    hostCaPath?: string;
+  };
+  /** When egressTls is enabled the sandbox network is internal, which
+   * disables port publishing — the sandbox agent is reached through this
+   * gateway proxy instead (the gateway joins the sandbox network). */
+  agentProxyUrl?: string;
   dockerBin?: string;
   cpus?: number;
   memoryMb?: number;
@@ -169,9 +182,11 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     timeoutMs?: number,
     signal?: AbortSignal,
   ): Promise<{ status: number; text: string }> {
-    const port = await resolvePort(name);
+    const base = opts.agentProxyUrl
+      ? `${opts.agentProxyUrl.replace(/\/$/, "")}/agent/${name}`
+      : `http://127.0.0.1:${await resolvePort(name)}`;
     const signals = [AbortSignal.timeout(timeoutMs ?? 30_000), ...(signal ? [signal] : [])];
-    const res = await fetchImpl(`http://127.0.0.1:${port}${path}`, {
+    const res = await fetchImpl(`${base}${path}`, {
       method: body === undefined ? "GET" : "POST",
       ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
       signal: AbortSignal.any(signals),
@@ -246,6 +261,14 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     return net;
   }
 
+  async function gatewayIpIn(networkName: string): Promise<string | null> {
+    if (!opts.egressGatewayContainer) return null;
+    const r = await dexec(["inspect", "--format", `{{(index .NetworkSettings.Networks "${networkName}").IPAddress}}`, opts.egressGatewayContainer]);
+    if (r.code !== 0) return null;
+    const ip = r.stdout.trim();
+    return ip || null;
+  }
+
   async function runContainer(name: string, scope: string | undefined, withVolume: boolean): Promise<void> {
     const net = await ensureNetwork(name);
     const args = [
@@ -266,6 +289,16 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       "-p",
       `127.0.0.1:0:${AGENT_PORT}`,
       "--add-host=host.docker.internal:host-gateway",
+      ...(opts.egressTls
+        ? [
+            "--add-host",
+            `${opts.egressTls.hostname}:${(await gatewayIpIn(net)) ?? "127.0.0.1"}`,
+            "-v",
+            `${opts.egressTls.caCertPath}:${opts.egressTls.hostCaPath ?? "/etc/ssl/certs/qm-egress-ca.crt"}:ro`,
+            "-e",
+            `NODE_EXTRA_CA_CERTS=${opts.egressTls.hostCaPath ?? "/etc/ssl/certs/qm-egress-ca.crt"}`,
+          ]
+        : []),
       ...(opts.cpus ? ["--cpus", String(opts.cpus)] : []),
       ...(opts.memoryMb ? ["--memory", `${opts.memoryMb}m`] : []),
       image,

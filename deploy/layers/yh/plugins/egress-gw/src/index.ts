@@ -335,6 +335,25 @@ export function createEgressServer(handlers: EgressHandlers): ReturnType<typeof 
       out = result.ok
         ? { status: 200, body: { status: result.status, body: result.body, usage: result.usage } }
         : { status: 403, body: { error: "forward_refused", reason: result.reason } };
+    } else if (req.method === "POST" && url.pathname.startsWith("/agent/")) {
+      const rest = url.pathname.slice("/agent/".length);
+      const slash = rest.indexOf("/");
+      const sandboxName = slash >= 0 ? rest.slice(0, slash) : rest;
+      const targetPath = slash >= 0 ? rest.slice(slash) : "/";
+      try {
+        const upstream = await fetch(`http://${sandboxName}:8080${targetPath}${url.search}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: raw,
+        });
+        const text = await upstream.text();
+        res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+        res.end(text);
+      } catch {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "agent_unreachable" }));
+      }
+      return;
     } else if (req.method === "POST" && url.pathname === "/usage-statement") {
       const result = await handlers.usageStatement({
         executionLeaseHash: typeof body.executionLeaseHash === "string" ? body.executionLeaseHash : "",
