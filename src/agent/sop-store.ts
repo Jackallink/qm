@@ -50,60 +50,53 @@ export function createSopRunStore(backing: DurableMap<SopRun>): SopRunStore {
       productHash?: string,
       auditScore?: number,
     ): Promise<SopRun> {
-      const run = await backing.get(runKey(id));
-      if (!run) throw new Error(`SopRun ${id} not found`);
-      if (run.currentGate !== gate) throw new Error(`Expected gate ${run.currentGate}, got ${gate}`);
-
-      // 标记当前 Gate 完成
-      const current = run.gates.find((g) => g.gate === gate && g.status === "in_progress");
-      if (!current) throw new Error(`Gate ${gate} not in_progress`);
-      current.status = "done";
-      current.signedBy = signedBy;
-      current.signedAt = Date.now();
-      current.productHash = productHash;
-      current.auditScore = auditScore;
-      current.updatedAt = Date.now();
-
-      // Gate 5 → frozen
-      const next = nextGate(gate);
-      if (next !== null) {
-        run.currentGate = next;
-        run.gates.push(newGateRecord(next, 1));
-      } else {
-        run.status = "frozen";
-      }
-      run.updatedAt = Date.now();
-      run.lastActiveAt = Date.now();
-      await backing.put(runKey(id), run);
-      return run;
+      const updated = await backing.update!(runKey(id), (run) => {
+        if (run.currentGate !== gate) throw new Error(`Expected gate ${run.currentGate}, got ${gate}`);
+        const current = run.gates.find((g) => g.gate === gate && g.status === "in_progress");
+        if (!current) throw new Error(`Gate ${gate} not in_progress`);
+        current.status = "done";
+        current.signedBy = signedBy;
+        current.signedAt = Date.now();
+        current.productHash = productHash;
+        current.auditScore = auditScore;
+        current.updatedAt = Date.now();
+        const next = nextGate(gate);
+        if (next !== null) {
+          run.currentGate = next;
+          run.gates.push(newGateRecord(next, 1));
+        } else {
+          run.status = "frozen";
+        }
+        run.updatedAt = Date.now();
+        run.lastActiveAt = Date.now();
+        return run;
+      });
+      if (!updated) throw new Error(`SopRun ${id} not found`);
+      return updated;
     },
 
     async rollback(id: string, toGate: GateNumber, _reason: string): Promise<SopRun> {
-      const run = await backing.get(runKey(id));
-      if (!run) throw new Error(`SopRun ${id} not found`);
-      if (!canRollbackTo(run.currentGate, toGate))
-        throw new Error(`Cannot rollback from gate ${run.currentGate} to ${toGate}`);
-
-      // 标记 from..currentGate 的所有 Gate 为 superseded
-      for (const g of run.gates) {
-        if (g.gate >= toGate && g.gate <= run.currentGate && g.status !== "superseded") {
-          g.status = "superseded";
-          g.updatedAt = Date.now();
+      const updated = await backing.update!(runKey(id), (run) => {
+        if (!canRollbackTo(run.currentGate, toGate))
+          throw new Error(`Cannot rollback from gate ${run.currentGate} to ${toGate}`);
+        for (const g of run.gates) {
+          if (g.gate >= toGate && g.gate <= run.currentGate && g.status !== "superseded") {
+            g.status = "superseded";
+            g.updatedAt = Date.now();
+          }
         }
-      }
-
-      // 创建新版本（version = 已有最大版本 + 1）
-      const existingVersions = run.gates
-        .filter((g) => g.gate === toGate)
-        .map((g) => g.productVersion);
-      const newVersion = Math.max(0, ...existingVersions) + 1;
-
-      run.currentGate = toGate;
-      run.gates.push(newGateRecord(toGate, newVersion));
-      run.updatedAt = Date.now();
-      run.lastActiveAt = Date.now();
-      await backing.put(runKey(id), run);
-      return run;
+        const existingVersions = run.gates
+          .filter((g) => g.gate === toGate)
+          .map((g) => g.productVersion);
+        const newVersion = Math.max(0, ...existingVersions) + 1;
+        run.currentGate = toGate;
+        run.gates.push(newGateRecord(toGate, newVersion));
+        run.updatedAt = Date.now();
+        run.lastActiveAt = Date.now();
+        return run;
+      });
+      if (!updated) throw new Error(`SopRun ${id} not found`);
+      return updated;
     },
 
     async updateStatus(id: string, status: SopRun["status"]): Promise<SopRun> {

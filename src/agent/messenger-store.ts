@@ -51,7 +51,7 @@ export function createMessengerStore(
   subscriptions: DurableMap<AgentSubscription>,
 ): MessengerStore {
   const config = { ...DEFAULT_MESSENGER_CONFIG };
-  let agentSecret = "";
+  let agentSecret = randomUUID();
 
   function signMessage(msg: Partial<AgentMessage>, secret: string): string {
     const payload = `${msg.senderId}:${msg.receiverId}:${msg.type}:${msg.timestamp}:${msg.nonce}`;

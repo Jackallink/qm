@@ -1,9 +1,10 @@
 /**
- * Agent Messenger — Agent 间通信 + 三种模式 + 安全签名 + 异常处理。
+ * Agent Messenger — Agent 间通信 + 三种模式。
  *
  * 设计决策：
  * - Event（fire-and-forget）+ RPC（请求/响应）+ Observe（状态订阅）
- * - 消息签名含 timestamp+nonce（防重放）+ HMAC with agent secret
+ * - 消息携带 nonce 与 HMAC 签名（由 store 进程内 secret 生成；MVP 阶段
+ *   签名由 admin-gated 路由保护，接收端验证留给后续迭代）
  * - 内建异常：去重/指数退避重试/死信队列/循环检测
  * - 订阅管理 + 心跳检测
  * - 能力检查（消息类型 × sender → 授权列表）

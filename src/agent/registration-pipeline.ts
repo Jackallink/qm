@@ -89,13 +89,8 @@ function validateCapabilityBoundary(manifest: AgentManifest): RegistrationGateRe
     issues.push("agent cannot have both deploy and audit capabilities (segregation of duties)");
   }
 
-  // 写操作需审批标记
   if (ops?.write && ops.write.length > 0) {
-    // 标记需要审批桥
-    manifest.capabilities.operations = {
-      ...ops,
-      write: ops.write.map((w) => `${w} (requires approval)`),
-    };
+    issues.push("write operations require approval before enablement");
   }
 
   return {
