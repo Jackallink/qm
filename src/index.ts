@@ -28,6 +28,12 @@ const server = createServer(built.app, {
   ...(config.requireSignedPortalIdentity ? { requireSignedPortalIdentity: true } : {}),
   ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
   config: built.config,
+  ...(built.remoteTurnStore ? { remoteTurnStore: built.remoteTurnStore } : {}),
+  ...(built.remoteTurnBindingStore ? { remoteTurnBindingStore: built.remoteTurnBindingStore } : {}),
+  ...(built.remoteTurnTransportAuth ? { remoteTurnTransportAuth: built.remoteTurnTransportAuth } : {}),
+  ...(built.remoteTurnAttestationVerifier ? { remoteTurnAttestationVerifier: built.remoteTurnAttestationVerifier } : {}),
+  ...(built.remoteTurnTurnVerifier ? { remoteTurnTurnVerifier: built.remoteTurnTurnVerifier } : {}),
+  ...(built.remoteTurnAttestorClient ? { remoteTurnAttestorClient: built.remoteTurnAttestorClient } : {}),
   baseModelDefault: defaultModelForHarness(
     config.harness,
     configuredModelForHarness(config, config.harness),

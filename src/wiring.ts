@@ -184,6 +184,11 @@ import { createControlService } from "./api/control-service.ts";
 import { createMemoryRunStore } from "./runs/memory-run-store.ts";
 import { createPostgresRunStore } from "./runs/postgres-run-store.ts";
 import { createRemoteTurnStore, type RemoteTurnStore } from "./remote-turn/store.ts";
+import { createRemoteBindingStore, type RemoteBindingStore } from "./remote-turn/binding-store.ts";
+import { createAttestationVerifier } from "./remote-turn/attestation.ts";
+import { createTransportAuth, type TransportAuthVerifier } from "./remote-turn/transport-auth.ts";
+import { createRemoteTurnKeyProvider } from "./remote-turn/tokens.ts";
+import { verifyTurnToken } from "./remote-turn/tokens.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
 import { isTerminal, type RunStore } from "./runs/run-store.ts";
@@ -313,6 +318,17 @@ export interface BuiltApp {
   sessions: SessionStore;
   runs: RunStore;
   remoteTurnStore?: RemoteTurnStore;
+  remoteTurnBindingStore?: RemoteBindingStore;
+  remoteTurnTransportAuth?: TransportAuthVerifier;
+  remoteTurnAttestationVerifier?: ReturnType<typeof createAttestationVerifier>;
+  remoteTurnTurnVerifier?: { verifyTurnToken: typeof verifyTurnToken };
+  remoteTurnAttestorClient?: {
+    pushLease(input: {
+      remoteTurnId: string;
+      executionLease: string;
+      executionLeaseHash: string;
+    }): Promise<{ ok: true } | { ok: false; reason: string }>;
+  };
   signals: RunSignalStore;
   tasks: TaskStore;
   sessionStateBus: SessionStateBus;
@@ -808,8 +824,45 @@ export function buildApp(
       : createMemoryRunStore({ maxClaims: config.maxClaims });
   const runs: RunStore = runStore.runs;
   const ledger = runStore.ledger;
+  const remoteTurnSigningKey =
+    config.remoteTurnSigningKey ? createRemoteTurnKeyProvider({ privateKeyPem: config.remoteTurnSigningKey }) : null;
   const remoteTurnStore: RemoteTurnStore | undefined =
-    config.sessionStore === "postgres" ? createRemoteTurnStore(requireDbUrl("SESSION_STORE"), { runs }) : undefined;
+    config.sessionStore === "postgres"
+      ? createRemoteTurnStore(requireDbUrl("SESSION_STORE"), {
+          runs,
+          ...(remoteTurnSigningKey
+            ? { abortKey: remoteTurnSigningKey.getCurrentSigningKey() }
+            : {}),
+        })
+      : undefined;
+  const remoteTurnBindingStore: RemoteBindingStore | undefined =
+    config.sessionStore === "postgres" ? createRemoteBindingStore(requireDbUrl("SESSION_STORE")) : undefined;
+  const remoteTurnTransportAuth: TransportAuthVerifier | undefined = config.remoteTurnTransportAuthKeys
+    ? createTransportAuth({ keys: config.remoteTurnTransportAuthKeys })
+    : undefined;
+  const remoteTurnAttestationVerifier = createAttestationVerifier();
+  const remoteTurnAttestorClient =
+    remoteTurnStore && config.remoteTurnAttestorUrl
+      ? {
+          async pushLease(input: {
+            remoteTurnId: string;
+            executionLease: string;
+            executionLeaseHash: string;
+          }): Promise<{ ok: true } | { ok: false; reason: string }> {
+            try {
+              const res = await fetch(`${config.remoteTurnAttestorUrl}/lease`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(input),
+              });
+              if (!res.ok) return { ok: false as const, reason: `attestor lease push failed: HTTP ${res.status}` };
+              return { ok: true as const };
+            } catch (error) {
+              return { ok: false as const, reason: `attestor lease push failed: ${errMessage(error)}` };
+            }
+          },
+        }
+      : undefined;
 
   let processes: ProcessRegistry | undefined;
   if (supportsProcessSessions(sandbox)) {
@@ -1459,6 +1512,11 @@ export function buildApp(
     sessions,
     runs,
     ...(remoteTurnStore ? { remoteTurnStore } : {}),
+    ...(remoteTurnBindingStore ? { remoteTurnBindingStore } : {}),
+    ...(remoteTurnTransportAuth ? { remoteTurnTransportAuth } : {}),
+    ...(remoteTurnStore ? { remoteTurnAttestationVerifier } : {}),
+    ...(remoteTurnStore ? { remoteTurnTurnVerifier: { verifyTurnToken } } : {}),
+    ...(remoteTurnAttestorClient ? { remoteTurnAttestorClient } : {}),
     signals: runSignals,
     tasks,
     sessionStateBus,

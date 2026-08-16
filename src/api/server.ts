@@ -291,7 +291,7 @@ async function gate(
 
 function baseCtx(req: IncomingMessage, res: ServerResponse, wiring: Wiring): BaseCtx {
   const url = new URL(req.url ?? "/", "http://localhost");
-  return { req, res, ...wiring, url, pathname: url.pathname, method: req.method ?? "GET", params: {} };
+  return { req, res, ...wiring, url, pathname: url.pathname, method: req.method ?? "GET", params: {}, rawBody: rawBodies.get(req) ?? "" };
 }
 
 function respondError(req: IncomingMessage, res: ServerResponse, err: unknown): void {

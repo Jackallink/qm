@@ -44,6 +44,8 @@ async function verifyTransport(ctx: ApiCtx): Promise<TransportCheck> {
   const binding = await deps.remoteTurnBindingStore.getBinding(id);
   if (!binding) return { ok: false, status: 404, message: "binding not found" };
   const source = deps.remoteTurnTransportAuth.verifySourceAuth(binding, {
+    method: ctx.method,
+    pathWithQuery: ctx.pathname + ctx.url.search,
     signature: ctx.req.headers["x-signature"],
     timestamp: ctx.req.headers["x-timestamp"],
     body: ctx.rawBody,

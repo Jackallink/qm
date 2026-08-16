@@ -91,7 +91,7 @@ function turnExpected(overrides: Record<string, unknown> = {}): TurnExpected {
     aud: "urn:qm:v1:runtime:org1:r1",
     envelopeDigest: HASH64,
     remoteTurnId: UUID,
-    now: 1_800_000_010,
+    now: 1_800_000_010_000,
     ...overrides,
   };
 }
@@ -119,7 +119,7 @@ function abortExpected(overrides: Record<string, unknown> = {}): AbortExpected {
     aud: "urn:qm:v1:runtime:org1:r1",
     remoteTurnId: UUID,
     turnJtiHash: HASH64,
-    now: 1_800_000_010,
+    now: 1_800_000_010_000,
     ...overrides,
   };
 }
@@ -132,7 +132,7 @@ test("csprngHex returns 32 hex chars with 16 bytes of entropy", () => {
 });
 
 test("turn token mints and verifies with a valid key", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const claims = baseTurnClaims();
   const token = await mintTurnToken(claims as unknown as TurnClaims, { kid: fixture.kid, privateKeyPem: fixture.privateKey.export({ type: "pkcs8", format: "pem" }).toString() });
@@ -143,7 +143,7 @@ test("turn token mints and verifies with a valid key", async () => {
 });
 
 test("turn token rejects a forged signature", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const a = await makeKeys(now);
   const b = await makeKeys(now, { kid: "core-k2" });
   const token = await a.sign(baseTurnClaims());
@@ -152,39 +152,39 @@ test("turn token rejects a forged signature", async () => {
 });
 
 test("turn token rejects an expired token (now >= exp)", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims());
-  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_090 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_090_000 }));
   assert.equal(verified, null);
 });
 
 test("turn token rejects an iat more than 30s in the future", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims({ iat: 1_800_000_100 }));
-  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050_000 }));
   assert.equal(verified, null);
 });
 
 test("turn token rejects an early token (now < nbf - 30s skew)", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims({ nbf: 1_800_000_150 }));
-  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_050_000 }));
   assert.equal(verified, null);
 });
 
 test("turn token accepts nbf within 30s skew", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims({ nbf: 1_800_000_035 }));
-  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_010 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_010_000 }));
   assert.ok(verified);
 });
 
 test("turn token rejects a wrong audience", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims());
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ aud: "urn:qm:v1:runtime:other:r2" }));
@@ -192,7 +192,7 @@ test("turn token rejects a wrong audience", async () => {
 });
 
 test("turn token rejects a wrong capability", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims({ capability: "abort" }));
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected());
@@ -200,7 +200,7 @@ test("turn token rejects a wrong capability", async () => {
 });
 
 test("turn token rejects a wrong remoteTurnId", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims());
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ remoteTurnId: "11111111-2222-3333-4444-555555555555" }));
@@ -208,7 +208,7 @@ test("turn token rejects a wrong remoteTurnId", async () => {
 });
 
 test("turn token rejects a wrong envelopeDigest", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims());
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ envelopeDigest: "c".repeat(64) }));
@@ -216,7 +216,7 @@ test("turn token rejects a wrong envelopeDigest", async () => {
 });
 
 test("turn token rejects an unknown kid", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims(), "unknown-kid");
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected());
@@ -224,15 +224,15 @@ test("turn token rejects an unknown kid", async () => {
 });
 
 test("turn token rejects a retired key (now >= retiresAt)", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now, { retiresAt: 1_800_000_005 });
   const token = await fixture.sign(baseTurnClaims());
-  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_010 }));
+  const verified = await verifyTurnToken(token, fixture.keySet, turnExpected({ now: 1_800_000_010_000 }));
   assert.equal(verified, null);
 });
 
 test("turn token accepts an overlap-state key inside its window", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now, { kid: "core-k1", state: "overlap" });
   const token = await fixture.sign(baseTurnClaims());
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected());
@@ -240,7 +240,7 @@ test("turn token accepts an overlap-state key inside its window", async () => {
 });
 
 test("turn token rejects a non-EdDSA algorithm (alg confusion)", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const header = Buffer.from(JSON.stringify({ alg: "HS256", kid: fixture.kid })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(baseTurnClaims())).toString("base64url");
@@ -250,7 +250,7 @@ test("turn token rejects a non-EdDSA algorithm (alg confusion)", async () => {
 });
 
 test("turn token rejects a header-kid that differs from payload kid", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseTurnClaims({ kid: "other-kid" }), "core-k1");
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected());
@@ -258,7 +258,7 @@ test("turn token rejects a header-kid that differs from payload kid", async () =
 });
 
 test("abort token pre-claim binds turnJtiHash only", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await mintAbortToken(baseAbortClaims() as unknown as AbortClaims, { kid: fixture.kid, privateKeyPem: fixture.privateKey.export({ type: "pkcs8", format: "pem" }).toString() });
   const verified = await verifyAbortToken(token, fixture.keySet, abortExpected(), { phase: "pre_claim" });
@@ -267,7 +267,7 @@ test("abort token pre-claim binds turnJtiHash only", async () => {
 });
 
 test("abort token post-claim requires executionLeaseHash and coreRunId", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await mintAbortToken(
     baseAbortClaims({ executionLeaseHash: HASH64, coreRunId: "run-1" }) as unknown as AbortClaims,
@@ -281,7 +281,7 @@ test("abort token post-claim requires executionLeaseHash and coreRunId", async (
 });
 
 test("abort token post-claim rejects a mismatched execution lease", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await mintAbortToken(
     baseAbortClaims({ executionLeaseHash: "d".repeat(64), coreRunId: "run-1" }) as unknown as AbortClaims,
@@ -295,7 +295,7 @@ test("abort token post-claim rejects a mismatched execution lease", async () => 
 });
 
 test("abort token rejects a missing lease in post-claim phase", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await fixture.sign(baseAbortClaims());
   const verified = await verifyAbortToken(token, fixture.keySet, abortExpected(), {
@@ -306,7 +306,7 @@ test("abort token rejects a missing lease in post-claim phase", async () => {
 });
 
 test("abort token cannot invoke a turn (capability check)", async () => {
-  const now = (): number => 1_800_000_000;
+  const now = (): number => 1_800_000_000_000;
   const fixture = await makeKeys(now);
   const token = await mintAbortToken(baseAbortClaims() as unknown as AbortClaims, { kid: fixture.kid, privateKeyPem: fixture.privateKey.export({ type: "pkcs8", format: "pem" }).toString() });
   const verified = await verifyTurnToken(token, fixture.keySet, turnExpected());
@@ -422,11 +422,10 @@ test("claim consumes the turn JTI once, mints a verifiable abort token, and refu
       for (const er of eventRows) {
         assert.ok(!JSON.stringify(er.payload).includes(first.executionLease), "raw lease must never enter event payloads");
       }
-      const nowSec = Math.floor(Date.now() / 1000);
       const verifiedAbort = await verifyAbortToken(
         first.abortToken,
         verifyKeys,
-        { aud: "urn:qm:v1:runtime:org1:r1", remoteTurnId, turnJtiHash: "f".repeat(64), now: nowSec },
+        { aud: "urn:qm:v1:runtime:org1:r1", remoteTurnId, turnJtiHash: "f".repeat(64), now: Date.now() },
         { phase: "post_claim", persistedExecutionLeaseHash: first.executionLeaseHash },
       );
       assert.ok(verifiedAbort, "claim-minted abort token must verify with its own key set");

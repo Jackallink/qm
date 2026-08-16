@@ -1,4 +1,5 @@
 import { verifySignature } from "../auth/source-auth.ts";
+import { canonicalPayload } from "../auth/source-auth-sign.ts";
 import type { RemoteRuntimeBinding } from "./binding-store.ts";
 
 export interface TransportAuthKeys {
@@ -10,7 +11,7 @@ export type TransportAuthResult = { ok: true } | { ok: false; reason: string };
 export interface TransportAuthVerifier {
   verifySourceAuth(
     binding: Pick<RemoteRuntimeBinding, "transportSourceAuthKeyId">,
-    req: { signature: unknown; timestamp: unknown; body: string },
+    req: { method: string; pathWithQuery: string; signature: unknown; timestamp: unknown; body: string },
   ): TransportAuthResult;
   verifyClientCertPin(
     binding: Pick<RemoteRuntimeBinding, "transportCertificatePin">,
@@ -28,7 +29,7 @@ export function createTransportAuth(opts: {
   return {
     verifySourceAuth(
       binding: Pick<RemoteRuntimeBinding, "transportSourceAuthKeyId">,
-      req: { signature: unknown; timestamp: unknown; body: string },
+      req: { method: string; pathWithQuery: string; signature: unknown; timestamp: unknown; body: string },
     ): TransportAuthResult {
       const secret = opts.keys[binding.transportSourceAuthKeyId];
       if (!secret) return { ok: false, reason: "unknown transport source-auth key id" };
@@ -36,7 +37,8 @@ export function createTransportAuth(opts: {
         return { ok: false, reason: "missing signature or timestamp" };
       }
       const timestamp = Number(req.timestamp);
-      const result = verifySignature(secret, { signature: req.signature, timestamp, body: req.body }, now(), replayWindowMs);
+      const canonical = canonicalPayload(req.method, req.pathWithQuery, req.body);
+      const result = verifySignature(secret, { signature: req.signature, timestamp, body: canonical }, now(), replayWindowMs);
       return result.ok ? { ok: true } : { ok: false, reason: result.reason ?? "signature verification failed" };
     },
     verifyClientCertPin(

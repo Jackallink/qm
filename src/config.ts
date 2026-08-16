@@ -79,6 +79,9 @@ export interface Config {
   skillSyncPollMs: number;
   monitorHeartbeatMs: number;
   signingSecret?: string;
+  remoteTurnSigningKey?: string;
+  remoteTurnTransportAuthKeys?: Record<string, string>;
+  remoteTurnAttestorUrl?: string;
   capabilitySecret?: string;
   portalIdentitySecret?: string;
   requireSignedPortalIdentity?: boolean;
@@ -806,6 +809,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     monitorHeartbeatMs:
       (numEnvStrict("MONITOR_HEARTBEAT_SEC", env.MONITOR_HEARTBEAT_SEC) ?? CONFIG_DEFAULTS.monitorHeartbeatSec) * 1000,
     ...(env.CORE_SIGNING_SECRET ? { signingSecret: env.CORE_SIGNING_SECRET } : {}),
+    ...(env.REMOTE_TURN_SIGNING_KEY ? { remoteTurnSigningKey: env.REMOTE_TURN_SIGNING_KEY } : {}),
+    ...(env.REMOTE_TURN_TRANSPORT_AUTH_KEYS
+      ? { remoteTurnTransportAuthKeys: JSON.parse(env.REMOTE_TURN_TRANSPORT_AUTH_KEYS) as Record<string, string> }
+      : {}),
+    ...(env.REMOTE_TURN_ATTESTOR_URL ? { remoteTurnAttestorUrl: env.REMOTE_TURN_ATTESTOR_URL } : {}),
     ...((env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET)
       ? { capabilitySecret: env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET }
       : {}),
