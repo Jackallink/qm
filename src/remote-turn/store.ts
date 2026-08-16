@@ -289,10 +289,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     });
   }
 
-  async function recordDenial(remoteTurnId: string, reason: RefusalReason): Promise<void> {
+  async function recordDenial(remoteTurnId: string, reason: RefusalReason, scopeId?: string): Promise<void> {
     await pool.q(
-      "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, created_at) VALUES($1, 1, 'refused', $2, $3) ON CONFLICT (remote_turn_id, seq) DO NOTHING",
-      [remoteTurnId, JSON.stringify({ reason }), now()],
+      "INSERT INTO remote_turn_events(remote_turn_id, seq, event_type, payload, scope_id, created_at) VALUES($1, 1, 'refused', $2, $3, $4) ON CONFLICT (remote_turn_id, seq) DO NOTHING",
+      [remoteTurnId, JSON.stringify({ reason }), scopeId ?? null, now()],
     );
   }
 
@@ -315,7 +315,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       }), runLeaseToken, ADMISSION_WINDOW_MS, t0],
     );
     if (runInserted !== 1) {
-      await recordDenial(input.coreRunId, "remote_run_exists");
+      await recordDenial(input.coreRunId, "remote_run_exists", input.scopeId);
       return { status: "refused", reason: "remote_run_exists" };
     }
 
@@ -479,7 +479,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
     if (refusalReason) {
       await markRunFailed(input.coreRunId, `remote admission refused: ${refusalReason}`);
-      await recordDenial(input.coreRunId, refusalReason);
+      await recordDenial(input.coreRunId, refusalReason, input.scopeId);
       return { status: "refused", reason: refusalReason };
     }
 
@@ -1327,7 +1327,11 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     );
     const { rows } = await pool.query(
       "SELECT e.remote_turn_id, e.seq, e.event_type, e.payload, e.created_at FROM remote_turn_events e " +
-        "JOIN remote_turn t ON t.id = e.remote_turn_id WHERE t.scope_id=$1 ORDER BY e.remote_turn_id, e.seq",
+        "JOIN remote_turn t ON t.id = e.remote_turn_id WHERE t.scope_id=$1 " +
+        "UNION ALL " +
+        "SELECT e.remote_turn_id, e.seq, e.event_type, e.payload, e.created_at FROM remote_turn_events e " +
+        "WHERE e.scope_id=$1 AND NOT EXISTS (SELECT 1 FROM remote_turn t WHERE t.id = e.remote_turn_id) " +
+        "ORDER BY remote_turn_id, seq",
       [scopeId],
     );
     return {

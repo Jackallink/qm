@@ -174,3 +174,51 @@ test("operator with no authorization hook is always denied (fail closed)", { ski
   const result = await store.readAuditChain("scope-d", "unknown-operator");
   assert.equal(result.status, "not_found", "no hook means no operator is authorized");
 });
+
+test("denial events are visible in the audit read for the matching scope", { skip }, async () => {
+  const authorized: Array<[string, string]> = [["scope-e", "operator-e"]];
+  const store = createRemoteTurnStore(URL!, {
+    authorizedOperators: async (scopeId, operatorId) =>
+      authorized.some(([s, o]) => s === scopeId && o === operatorId),
+  });
+  const bindings = createRemoteBindingStore(URL!);
+  const bindingId = `binding-deny-${randomUUID()}`;
+  await bindings.createBinding({ ...bindingInput, bindingId, allowedScopeId: "scope-e" });
+  const input = admitInput("scope-e", bindingId);
+  const denied = await store.admit({
+    ...input,
+    g0: { ...input.g0, actorId: "actor-other" },
+  });
+  assert.equal(denied.status, "refused");
+
+  const result = await store.readAuditChain("scope-e", "operator-e");
+  assert.equal(result.status, "ok");
+  if (result.status !== "ok") return;
+  const denialEvents = result.events.filter((e) => e.eventType === "refused");
+  assert.equal(denialEvents.length, 1, "the denial must appear in the audit read");
+  assert.equal(denialEvents[0]!.remoteTurnId, input.coreRunId);
+  assert.equal((denialEvents[0]!.payload as { reason?: string }).reason, "governance_authorization_required");
+});
+
+test("a cross-scope denial is not visible to the other scope", { skip }, async () => {
+  const authorized: Array<[string, string]> = [["scope-f", "operator-f"], ["scope-g", "operator-g"]];
+  const store = createRemoteTurnStore(URL!, {
+    authorizedOperators: async (scopeId, operatorId) =>
+      authorized.some(([s, o]) => s === scopeId && o === operatorId),
+  });
+  const bindings = createRemoteBindingStore(URL!);
+  const bindingId = `binding-deny-${randomUUID()}`;
+  await bindings.createBinding({ ...bindingInput, bindingId, allowedScopeId: "scope-f" });
+  const input = admitInput("scope-f", bindingId);
+  const denied = await store.admit({
+    ...input,
+    g0: { ...input.g0, actorId: "actor-other" },
+  });
+  assert.equal(denied.status, "refused");
+
+  const other = await store.readAuditChain("scope-g", "operator-g");
+  assert.equal(other.status, "ok");
+  if (other.status !== "ok") return;
+  const leaked = other.events.filter((e) => e.remoteTurnId === input.coreRunId);
+  assert.equal(leaked.length, 0, "a denial in scope-f must not leak into scope-g's read");
+});
