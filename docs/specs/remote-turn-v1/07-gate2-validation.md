@@ -44,3 +44,25 @@ Gate 2（上游通用扩展）实现完成，red-test-first；本记录为验证
 - `expirePreClaim`/`expireAdmissions` 的 `now` 参数仍用于测试注入，生产路径以 DB 时钟为准；应用时钟与 DB 时钟的边界秒漂移已消除于判定，但注入参数保留兼容。
 - claim 的 `claim_expires_at` 以 DB 时钟 + binding max_runtime_ms 写入；sweeper 以 DB 时钟判定。
 - FK 约束在绑定/审计 store 的独立 DDL 列表中以 `to_regclass` 守卫，表存在时才应用；首次建库顺序由 store 的 DDL 数组保证。
+
+## 多专家实现走查修复记录（2026-08-16）
+
+四路 fresh-context 专家对已实现代码走查（存储/事务、协议/安全、QM 集成、测试），发现并修复：
+
+Gate 2 内修复（8 commits）：
+- claim CAS 强制 pre_claim_expires_at（90s 期限 TOCTOU 消除）
+- admit 持久化完整 request（deliveryTarget/surface）——远程回复可经标准 delivery 路径投递
+- wiring 注入生产 run store——completeOn/failOn 的 onTerminal 链真实触发
+- listOrphanRuns 纳入 pending + 过期 lease——admit 崩溃窗口孤儿行可回收
+- session lease 续租 + acquireLease 跳过 remote_turn: holder——parked turn 租约不丢
+- 终态行 detach（qm_session_id→NULL）+ terminateTurn 强制 TerminationEvidence
+- prepareDispatch 拒绝已 abort 的 admitted turn
+- turn/abort claims schema pattern 强制（uuid/64-hex/minimums/jti minLength）
+
+记录为 Gate 3 backlog（不阻塞 Gate 2）：
+- settle() 在 COMMIT 前触发监听器（竞态窗口小，Gate 3 wiring 复核）
+- pool refcount 泄漏（wiring stop 补 remoteTurnStore.close()）
+- denial audit 事件孤儿化（readAuditChain 需并入）
+- KeySetEntry.state 冗余于时间窗、abort token exp 硬编码 90s、attestation_nonce_hash 不绑 CAS
+
+验证：132/132 remote-turn pg 套件 + 全量回归 + typecheck + diff-check 全绿。
