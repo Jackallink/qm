@@ -65,3 +65,19 @@ test("agent stores persist across instances (postgres)", { skip }, async () => {
   await factory.pool.q("DROP TABLE sop_runs_test").catch(() => undefined);
   await factory.pool.close();
 });
+
+test("SOP concurrent signGate does not duplicate gates (atomic update)", async () => {
+  const store = createSopRunStore(createMemoryMap());
+  const id = `sop-${randomUUID()}`;
+  await store.create(newSopRun(id, "deepseek-v4-flash", "ws-1", "agent-1") as never);
+  const [a, b] = await Promise.allSettled([
+    store.signGate(id, 0, "a"),
+    store.signGate(id, 0, "b"),
+  ]);
+  const succeeded = [a, b].filter((r) => r.status === "fulfilled").length;
+  assert.equal(succeeded, 1, "exactly one concurrent sign must win");
+  const run = await store.get(id);
+  assert.equal(run!.currentGate, 1, "the winner advances to the next gate");
+  const gate0Records = run!.gates.filter((g) => g.gate === 0);
+  assert.equal(gate0Records.length, 1, "no duplicated gate-0 record");
+});

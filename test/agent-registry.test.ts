@@ -16,6 +16,8 @@ function manifest(overrides: Partial<AgentManifest> = {}): AgentManifest {
     workspace: "ws-1",
     template: "standard",
     status: "draft",
+    harness: "prime",
+    model: { primary: "deepseek-v4-flash", tokenLimit: 100_000 },
     createdAt: Date.now(),
     updatedAt: Date.now(),
     ...overrides,
@@ -72,4 +74,22 @@ test("registry delete soft-deletes without an invalid transition", async () => {
   const got = await store.get("ws-1", m.id);
   assert.ok(got, "soft delete keeps the row");
   assert.equal(got!.status, "stopped");
+});
+
+test("registration review rejects write-capable agents without mutating the manifest", async () => {
+  const { reviewAgentRegistration } = await import("../src/agent/registration-pipeline.ts");
+  const base = manifest({ status: "draft" });
+  const withWrite = {
+    ...base,
+    capabilities: { operations: { write: ["files"] } },
+  } as AgentManifest;
+  const review = reviewAgentRegistration(withWrite, { isPlatformAdmin: false });
+  assert.equal(review.passed, false, "write operations must be gated");
+  assert.equal(review.blockedBy, 3, "the capability-boundary gate blocks");
+  const stored = review.manifest ?? withWrite;
+  assert.equal(
+    JSON.stringify(stored.capabilities?.operations?.write),
+    JSON.stringify(["files"]),
+    "the manifest must not be mutated by the review",
+  );
 });
