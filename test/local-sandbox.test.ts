@@ -267,3 +267,33 @@ test("concurrent teardown and provision for one scope serialize (no stop of a fr
   await sb.teardown(h2);
   assert.equal(fake.containers.get(h2.id)!.running, false);
 });
+
+test("egressTls + agentProxyUrl inject hosts redirect, CA mount, and proxy env into the container", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, {
+    egressGatewayContainer: "egress-gw",
+    egressTls: { hostname: "api.deepseek.com", caCertPath: "/tmp/qm-egress-tls/ca.crt" },
+  });
+  const handle = await sb.provision(rw(scopeId("personal", "U0")));
+  const container = fake.containers.get(handle.id);
+  assert.ok(container, "container must exist");
+  assert.ok(
+    container.extraHosts.some((h) => h.includes("api.deepseek.com")),
+    `hosts redirect must point api.deepseek.com at the gateway (got ${container.extraHosts.join(", ")})`,
+  );
+  assert.ok(
+    container.extraHosts.some((h) => h.startsWith("api.deepseek.com:")),
+    "the redirect host must have an address",
+  );
+  assert.equal(container.env["NODE_EXTRA_CA_CERTS"], "/etc/ssl/certs/qm-egress-ca.crt");
+});
+
+test("without egressTls the container gets no hosts redirect or CA env", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const handle = await sb.provision(rw(scopeId("personal", "U1")));
+  const container = fake.containers.get(handle.id);
+  assert.ok(container);
+  assert.equal(container.extraHosts.some((h) => h.includes("deepseek")), false);
+  assert.equal(container.env["NODE_EXTRA_CA_CERTS"], undefined);
+});

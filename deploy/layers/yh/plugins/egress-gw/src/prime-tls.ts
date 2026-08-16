@@ -2,7 +2,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Server } from "node:http";
 
-function ipInCidr(ip: string, cidr: string): boolean {
+export function ipInCidr(ip: string, cidr: string): boolean {
   const [base, bitsRaw] = cidr.split("/") as [string, string];
   const bits = Number(bitsRaw);
   if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
