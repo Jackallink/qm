@@ -352,7 +352,11 @@ test("abort during dispatching revokes JTI and refuses a later claim", { skip },
     await p.end();
   }
 
-  const terminated = await store.terminateTurn({ remoteTurnId: admitted.remoteTurnId, actor: "attestor-ctl" });
+  const terminated = await store.terminateTurn({
+    remoteTurnId: admitted.remoteTurnId,
+    actor: "attestor-ctl",
+    evidence: { sandboxDeleted: true, egressRevoked: true, proofDigest: "e".repeat(64) },
+  });
   assert.equal(terminated.ok, true);
   assert.ok(terminated.ok && terminated.status === "cancelled");
   const p2 = new pg.Pool({ connectionString: URL! });
@@ -919,11 +923,62 @@ test("acquireLease cannot steal an expired remote_turn: holder lease", { skip },
     await p.query("UPDATE session_leases SET expires_at=$1 WHERE holder=$2", [Math.floor(Date.now()) - 1000, holder]);
     const { createPostgresSessionStore } = await import("../src/sessions/postgres-session-store.ts");
     const sessions = createPostgresSessionStore(URL!);
-    const attempt = await sessions.acquireLease(sessionId, "local-turn");
+    const attempt = await sessions.acquireLease(sessionId, "local-turn" as never);
     assert.equal(attempt.lease, null, "a remote_turn: holder lease must not be stealable even when expired");
     const { rows } = await p.query("SELECT holder FROM session_leases WHERE session_id=$1", [sessionId]);
     assert.equal(rows[0].holder, holder, "the remote holder must still own the lease");
   } finally {
     await p.end();
   }
+});
+
+test("deleteSession succeeds for a session whose remote turn completed", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  await parkTurn(prepared, attestor);
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  const sessionId = (await (async () => {
+    const { rows } = await p.query("SELECT qm_session_id FROM remote_turn WHERE id=$1", [prepared.remoteTurnId]);
+    return rows[0].qm_session_id as string;
+  })());
+  try {
+    const reconcile = await prepared.store.reconcile({
+      remoteTurnId: prepared.remoteTurnId,
+      outcome: "cancelled",
+      evidenceDigest: "f".repeat(64),
+    });
+    assert.equal(reconcile.ok, true);
+    const { createPostgresSessionStore } = await import("../src/sessions/postgres-session-store.ts");
+    const sessions = createPostgresSessionStore(URL!);
+    await sessions.deleteSession(sessionId);
+    const { rows } = await p.query("SELECT id FROM sessions WHERE id=$1", [sessionId]);
+    assert.equal(rows.length, 0, "the session must be deleted after its remote turn is terminal");
+  } finally {
+    await p.end();
+  }
+});
+
+test("terminateTurn refuses without termination evidence", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
+  assert.ok(abortResult.ok);
+  const refused = await store.terminateTurn({
+    remoteTurnId,
+    actor: "attestor-ctl",
+    evidence: { sandboxDeleted: false, egressRevoked: false, proofDigest: "0".repeat(64) },
+  });
+  assert.equal(refused.ok, false, "termination without verified evidence must be refused");
+  assert.ok(!refused.ok && refused.reason === "not_abortable");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "cancel_requested", "the turn must stay cancel_requested awaiting proof");
+  } finally {
+    await p.end();
+  }
+  void attestor;
 });

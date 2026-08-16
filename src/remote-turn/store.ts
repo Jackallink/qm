@@ -186,7 +186,7 @@ export interface RemoteTurnStore {
     evidence: TerminationEvidence;
   }): Promise<"completed" | "parked" | "not_ready">;
   abort(input: AbortInput): Promise<AbortResult>;
-  terminateTurn(input: { remoteTurnId: string; actor: string }): Promise<AbortResult>;
+  terminateTurn(input: { remoteTurnId: string; actor: string; evidence: TerminationEvidence }): Promise<AbortResult>;
   disable(input: { bindingId: string; actor: string }): Promise<DisableResult>;
   listParked(): Promise<ParkedTurnRecord[]>;
   listExpiredActive(): Promise<ExpiredActiveRecord[]>;
@@ -592,7 +592,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       if (!expired[0]?.expired) return "not_expired";
 
       await client.query(
-        "UPDATE remote_turn SET status='failed_pre_dispatch', version=version+1, updated_at=$2 WHERE id=$1 AND status='dispatching'",
+        "UPDATE remote_turn SET status='failed_pre_dispatch', version=version+1, updated_at=$2, qm_session_id=NULL WHERE id=$1 AND status='dispatching'",
         [remoteTurnId, now],
       );
       await client.query(
@@ -631,7 +631,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         const remoteTurnId = turn.id as string;
         const coreRunId = turn.core_run_id as string;
         await client.query(
-          "UPDATE remote_turn SET status='rejected', version=version+1, updated_at=$2 WHERE id=$1 AND status IN ('created','session_bound','admitted')",
+          "UPDATE remote_turn SET status='rejected', version=version+1, updated_at=$2, qm_session_id=NULL WHERE id=$1 AND status IN ('created','session_bound','admitted')",
           [remoteTurnId, now],
         );
         await client.query(
@@ -700,8 +700,16 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       );
       return rowCount === 1;
     }
+    const terminal = new Set([
+      "completed",
+      "cancelled",
+      "failed_pre_dispatch",
+      "failed",
+      "rejected",
+    ] as RemoteTurnStatus[]);
+    const detach = terminal.has(to as RemoteTurnStatus) ? ", qm_session_id = NULL" : "";
     const { rowCount } = await client.query(
-      "UPDATE remote_turn SET status=$2, version=version+1, updated_at=$3 WHERE id=$1 AND status=$4",
+      `UPDATE remote_turn SET status=$2, version=version+1, updated_at=$3${detach} WHERE id=$1 AND status=$4`,
       [remoteTurnId, to, now(), from],
     );
     return rowCount === 1;
@@ -855,7 +863,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       const reply = (turn.reply as string | null) ?? "";
       const sessionId = (turn.qm_session_id as string | null) ?? undefined;
       await client.query(
-        "UPDATE remote_turn SET status='completed', termination_proof_digest=$2, version=version+1, updated_at=$3 WHERE id=$1 AND status='teardown_pending'",
+        "UPDATE remote_turn SET status='completed', termination_proof_digest=$2, version=version+1, updated_at=$3, qm_session_id=NULL WHERE id=$1 AND status='teardown_pending'",
         [input.remoteTurnId, sha256Hex(input.evidence.proofDigest), now()],
       );
       await writeEvent(client, input.remoteTurnId, "complete", { proofDigest: sha256Hex(input.evidence.proofDigest) });
@@ -947,12 +955,24 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     if (leaseToken) await runs.failOn(client, coreRunId, leaseToken, error);
   }
 
-  async function terminateTurnOnClient(client: PoolClient, remoteTurnId: string, actor: string): Promise<AbortResult> {
+  async function terminateTurnOnClient(
+    client: PoolClient,
+    remoteTurnId: string,
+    actor: string,
+    evidence: TerminationEvidence,
+  ): Promise<AbortResult> {
     const turn = await readTurn(client, remoteTurnId);
     if (!turn || turn.status !== "cancel_requested") return { ok: false as const, reason: "not_abortable" as const };
+    if (!evidence.sandboxDeleted || !evidence.egressRevoked) {
+      return { ok: false as const, reason: "not_abortable" as const };
+    }
     const advanced = await advanceState(client, remoteTurnId, "cancel_requested", "complete");
     if (!advanced) return { ok: false as const, reason: "not_abortable" as const };
-    await writeEvent(client, remoteTurnId, "complete", { actor, termination: true });
+    await writeEvent(client, remoteTurnId, "complete", {
+      actor,
+      termination: true,
+      proofDigest: sha256Hex(evidence.proofDigest),
+    });
     await releaseTurnResources(client, remoteTurnId);
     await failRemoteRunOnClient(client, turn.core_run_id as string, `remote turn cancelled by ${actor}`);
     return { ok: true as const, status: "cancelled" as const };
@@ -965,10 +985,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     });
   }
 
-  async function terminateTurn(input: { remoteTurnId: string; actor: string }): Promise<AbortResult> {
+  async function terminateTurn(input: { remoteTurnId: string; actor: string; evidence: TerminationEvidence }): Promise<AbortResult> {
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
-      return terminateTurnOnClient(client, input.remoteTurnId, input.actor);
+      return terminateTurnOnClient(client, input.remoteTurnId, input.actor, input.evidence);
     });
   }
 
@@ -1180,7 +1200,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       const to = nextState("parked", event);
       const { rowCount } = await client.query(
         `UPDATE remote_turn SET status=$2, reconciled_from_state='parked', reconciliation_evidence_ref=$3,
-           version=version+1, updated_at=$4
+           version=version+1, updated_at=$4, qm_session_id=NULL
          WHERE id=$1 AND status='parked' AND version=$5`,
         [input.remoteTurnId, to, input.evidenceDigest, now(), Number(turn.version)],
       );

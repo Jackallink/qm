@@ -100,7 +100,15 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     for (const turn of cancelRequested) {
       const state = await opts.attestor.querySandboxState(turn.remoteTurnId);
       if (!state.terminationSeen) continue;
-      const result = await opts.store.terminateTurn({ remoteTurnId: turn.remoteTurnId, actor: "remote-turn-reconciler" });
+      const result = await opts.store.terminateTurn({
+        remoteTurnId: turn.remoteTurnId,
+        actor: "remote-turn-reconciler",
+        evidence: {
+          sandboxDeleted: true,
+          egressRevoked: true,
+          proofDigest: `termination:${turn.remoteTurnId}:${nowMs}`,
+        },
+      });
       if (result.ok && result.status === "cancelled") reconciled += 1;
     }
     for (const orphan of await opts.store.listOrphanRuns()) {
