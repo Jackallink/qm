@@ -1,6 +1,6 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRemoteTurnStore, type AdmitInput, type G0Context } from "../src/remote-turn/store.ts";
 import { createRemoteBindingStore, type CreateBindingInput } from "../src/remote-turn/binding-store.ts";
 import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest } from "../src/remote-turn/envelope.ts";
@@ -39,6 +39,12 @@ const bindingInput: CreateBindingInput = {
   tokenTtlMs: 90_000,
   budgetCeilingUsd: 1.0,
   policySnapshotHash: "policy-1",
+
+  networkPolicyId: "net-pol-1",
+
+  endpointAllowlist: ["https://api.deepseek.com"],
+
+  egressAudience: "urn:qm:egress:1",
   createdBy: "deploy-ctl",
   coreVerificationKeys: [],
   attestorKeys: [],
@@ -393,4 +399,51 @@ test("persisted remote run request carries delivery surface and target for runRe
   } finally {
     await runtime.close();
   }
+});
+
+test("admit persists the pre-claim expectation snapshot for the dispatching turn", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const input = admitInput({ bindingId, scopeId });
+  const result = await store.admit(input);
+  assert.equal(result.status, "admitted");
+  assert.ok(result.status === "admitted");
+
+  const before = await store.getPreClaimExpectation(result.remoteTurnId);
+  assert.equal(before, null, "expectation must not exist while admitted (not yet dispatched)");
+
+  const enc = { turnJti: randomUUID(), attestationNonce: randomUUID() };
+  const dispatch = await store.prepareDispatch({
+    remoteTurnId: result.remoteTurnId,
+    leaseToken: result.runLeaseToken,
+    envelope: enc,
+  });
+  assert.equal(dispatch.ok, true);
+
+  const snapshot = await store.getPreClaimExpectation(result.remoteTurnId);
+  assert.ok(snapshot, "expectation must exist after dispatch");
+  assert.equal(snapshot!.bindingId, bindingId);
+  assert.equal(snapshot!.bindingVersion, 1);
+  assert.equal(snapshot!.turnJtiHash, createHash("sha256").update(enc.turnJti).digest("hex"));
+  assert.equal(snapshot!.attestationNonceHash, createHash("sha256").update(enc.attestationNonce).digest("hex"));
+  assert.equal(snapshot!.intendedWorkloadIdentity, `wl-${result.remoteTurnId}`);
+  assert.equal(snapshot!.releaseDigest, bindingInput.releaseDigest);
+  assert.equal(snapshot!.policyDigest, createHash("sha256").update([bindingInput.policySnapshotHash, "net-pol-1", JSON.stringify(["https://api.deepseek.com"]), "urn:qm:egress:1"].join("|")).digest("hex"));
+  assert.deepEqual(snapshot!.endpointAllowlist, ["https://api.deepseek.com"]);
+  assert.equal(snapshot!.egressAudience, "urn:qm:egress:1");
+  assert.equal(snapshot!.singleUse, true);
+  assert.ok(snapshot!.expiry > Date.now() / 1000);
+  assert.ok(snapshot!.version > 1, "dispatch bumped the version");
+});
+
+test("getPreClaimExpectation is null once the turn is claimed or terminal", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const input = admitInput({ bindingId, scopeId });
+  const result = await store.admit(input);
+  assert.equal(result.status, "admitted");
+  assert.ok(result.status === "admitted");
+
+  const denied = await store.getPreClaimExpectation(randomUUID());
+  assert.equal(denied, null);
 });

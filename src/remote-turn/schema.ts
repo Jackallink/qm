@@ -21,6 +21,9 @@ export const REMOTE_RUNTIME_BINDING_DDL = `CREATE TABLE IF NOT EXISTS remote_run
   budget_ceiling_usd NUMERIC NOT NULL,
   key_sets JSONB NOT NULL,
   policy_snapshot_hash TEXT NOT NULL,
+  network_policy_id TEXT NOT NULL,
+  endpoint_allowlist JSONB NOT NULL,
+  egress_audience TEXT NOT NULL,
   created_by TEXT NOT NULL,
   created_at BIGINT NOT NULL,
   disabled_by TEXT,
@@ -80,6 +83,10 @@ export const REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL = `ALTER TABLE remote_turn A
 
 export const REMOTE_BINDING_SOURCE_AUTH_ALTER_DDL = `ALTER TABLE remote_runtime_binding ADD COLUMN IF NOT EXISTS transport_source_auth_key_id TEXT NOT NULL DEFAULT ''`;
 
+export const REMOTE_BINDING_POLICY_ALTER_DDL = `ALTER TABLE remote_runtime_binding ADD COLUMN IF NOT EXISTS network_policy_id TEXT NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS endpoint_allowlist JSONB NOT NULL DEFAULT '[]', ADD COLUMN IF NOT EXISTS egress_audience TEXT NOT NULL DEFAULT ''`;
+
+export const REMOTE_TURN_PRECLAIM_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS policy_digest TEXT, ADD COLUMN IF NOT EXISTS endpoint_allowlist JSONB, ADD COLUMN IF NOT EXISTS egress_audience TEXT, ADD COLUMN IF NOT EXISTS pre_claim_expiry BIGINT`;
+
 export const REMOTE_TURN_CORE_RUN_FK_DDL = `DO $fk$ BEGIN IF to_regclass('runs') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_core_run_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_core_run_fk FOREIGN KEY (core_run_id) REFERENCES runs(id) ON DELETE RESTRICT; END IF; END $fk$`;
 
 export const REMOTE_TURN_SESSION_FK_DDL = `DO $fk$ BEGIN IF to_regclass('sessions') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_session_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_session_fk FOREIGN KEY (qm_session_id) REFERENCES sessions(id) ON DELETE RESTRICT; END IF; END $fk$`;
@@ -137,7 +144,9 @@ export const REMOTE_TURN_AUDIT_READS_DDL = `CREATE TABLE IF NOT EXISTS remote_tu
 export const REMOTE_TURN_DDL_ALL = [
   REMOTE_RUNTIME_BINDING_DDL,
   REMOTE_BINDING_SOURCE_AUTH_ALTER_DDL,
+  REMOTE_BINDING_POLICY_ALTER_DDL,
   REMOTE_TURN_DDL,
+  REMOTE_TURN_PRECLAIM_ALTER_DDL,
   REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL,
   REMOTE_TURN_CORE_RUN_FK_DDL,
   REMOTE_TURN_SESSION_FK_DDL,

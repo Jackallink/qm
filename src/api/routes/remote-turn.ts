@@ -1,0 +1,150 @@
+import { createHash } from "node:crypto";
+import { sendJson } from "../http.ts";
+import { type ApiCtx, type Route } from "./route.ts";
+import { isObj } from "./shared.ts";
+
+const sha256Hex = (input: string): string => createHash("sha256").update(input).digest("hex");
+
+function bodyOf(ctx: ApiCtx): Record<string, unknown> {
+  return isObj(ctx.body) ? ctx.body : {};
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function badRequest(ctx: ApiCtx, message: string): void {
+  sendJson(ctx.res, 400, { error: "bad_request", message });
+}
+
+function notFound(ctx: ApiCtx, message: string): void {
+  sendJson(ctx.res, 404, { error: "not_found", message });
+}
+
+function unauthorized(ctx: ApiCtx, message: string): void {
+  sendJson(ctx.res, 401, { error: "unauthorized", message });
+}
+
+function serviceUnavailable(ctx: ApiCtx, message: string): void {
+  sendJson(ctx.res, 503, { error: "service_unavailable", message });
+}
+
+type TransportCheck =
+  | { ok: true; bindingId: string; binding: import("../../remote-turn/binding-store.ts").RemoteRuntimeBinding }
+  | { ok: false; status: number; message: string };
+
+async function verifyTransport(ctx: ApiCtx): Promise<TransportCheck> {
+  const deps = ctx.deps;
+  if (!deps.remoteTurnTransportAuth || !deps.remoteTurnBindingStore) {
+    return { ok: false, status: 503, message: "remote turn control plane is not configured" };
+  }
+  const body = bodyOf(ctx);
+  const id = typeof body.bindingId === "string" && body.bindingId.length > 0 ? body.bindingId : null;
+  if (!id) return { ok: false, status: 400, message: "bindingId required" };
+  const binding = await deps.remoteTurnBindingStore.getBinding(id);
+  if (!binding) return { ok: false, status: 404, message: "binding not found" };
+  const source = deps.remoteTurnTransportAuth.verifySourceAuth(binding, {
+    signature: ctx.req.headers["x-signature"],
+    timestamp: ctx.req.headers["x-timestamp"],
+    body: ctx.rawBody,
+  });
+  if (!source.ok) return { ok: false, status: 401, message: source.reason };
+  const pin = deps.remoteTurnTransportAuth.verifyClientCertPin(
+    binding,
+    ctx.req.headers["x-client-cert-fingerprint"],
+  );
+  if (!pin.ok) return { ok: false, status: 401, message: pin.reason };
+  return { ok: true, bindingId: id, binding };
+}
+
+function sendTransportFailure(ctx: ApiCtx, check: { status: number; message: string }): void {
+  if (check.status === 400) badRequest(ctx, check.message);
+  else if (check.status === 404) notFound(ctx, check.message);
+  else if (check.status === 503) serviceUnavailable(ctx, check.message);
+  else unauthorized(ctx, check.message);
+}
+
+async function claim(ctx: ApiCtx): Promise<void> {
+  const transport = await verifyTransport(ctx);
+  if (!transport.ok) {
+    sendTransportFailure(ctx, transport);
+    return;
+  }
+  const deps = ctx.deps;
+  if (!deps.remoteTurnStore || !deps.remoteTurnAttestationVerifier || !deps.remoteTurnTurnVerifier || !deps.remoteTurnAttestorClient) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const body = bodyOf(ctx);
+  const turnToken = str(body.turnToken);
+  const attestationNonce = str(body.attestationNonce);
+  const preClaimJws = str(body.preClaimAttestation);
+  const remoteTurnId = str(body.remoteTurnId);
+  const envelopeDigest = str(body.envelopeDigest);
+  if (!turnToken || !attestationNonce || !preClaimJws || !remoteTurnId || !envelopeDigest) {
+    badRequest(ctx, "turnToken, attestationNonce, preClaimAttestation, remoteTurnId, and envelopeDigest are required");
+    return;
+  }
+  const turn = await deps.remoteTurnTurnVerifier.verifyTurnToken(turnToken, transport.binding.coreVerificationKeys, {
+    aud: transport.binding.runtimeAudience,
+    remoteTurnId,
+    envelopeDigest,
+    now: Date.now(),
+  });
+  if (!turn) {
+    unauthorized(ctx, "turn token verification failed");
+    return;
+  }
+  const expected = await deps.remoteTurnStore.getPreClaimExpectation(remoteTurnId);
+  if (!expected || expected.bindingId !== transport.bindingId) {
+    notFound(ctx, "turn not found in dispatching state for this binding");
+    return;
+  }
+  if (expected.turnJtiHash !== sha256Hex(turn.jti)) {
+    unauthorized(ctx, "turn token jti does not match the dispatched turn");
+    return;
+  }
+  const claims = await deps.remoteTurnAttestationVerifier.verifyPreClaimAttestation(preClaimJws, {
+    attestationKeySet: transport.binding.attestorKeys,
+    expected,
+  });
+  if (!claims) {
+    unauthorized(ctx, "pre-claim attestation verification failed");
+    return;
+  }
+  const result = await deps.remoteTurnStore.claim({
+    remoteTurnId,
+    turnJtiHash: expected.turnJtiHash,
+    attestationNonceHash: expected.attestationNonceHash,
+    verifiedPreClaim: claims,
+    runtimeAudience: transport.binding.runtimeAudience,
+    version: expected.version,
+  });
+  if (!result.ok) {
+    sendJson(ctx.res, 409, { error: "claim_refused", reason: result.reason });
+    return;
+  }
+  const leasePush = await deps.remoteTurnAttestorClient.pushLease({
+    remoteTurnId,
+    executionLease: result.executionLease,
+    executionLeaseHash: result.executionLeaseHash,
+  });
+  if (!leasePush.ok) {
+    sendJson(ctx.res, 503, {
+      error: "lease_delivery_failed",
+      message: leasePush.reason,
+      executionLeaseHash: result.executionLeaseHash,
+      abortToken: result.abortToken,
+    });
+    return;
+  }
+  sendJson(ctx.res, 200, {
+    status: "claimed",
+    executionLeaseHash: result.executionLeaseHash,
+    abortToken: result.abortToken,
+  });
+}
+
+export const remoteTurnRoutes: ReadonlyArray<Route<ApiCtx>> = [
+  { method: "POST", path: "/v1/remote-turn/claim", auth: "public", handle: claim },
+];

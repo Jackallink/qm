@@ -56,7 +56,7 @@ const meteringKeys: KeySetEntry[] = [
   },
 ];
 
-const input = {
+const input: import("../src/remote-turn/binding-store.ts").CreateBindingInput = {
   bindingId: "binding-1",
   configuredOrgId: "org:local-deepseek",
   allowedScopeId: "org:local-deepseek",
@@ -76,12 +76,18 @@ const input = {
   tokenTtlMs: 90000,
   budgetCeilingUsd: 1,
   policySnapshotHash: "policy-hash-1",
+
+  networkPolicyId: "net-pol-1",
+
+  endpointAllowlist: ["https://api.deepseek.com"],
+
+  egressAudience: "urn:qm:egress:1",
   createdBy: "deployment-controller",
   coreVerificationKeys: coreKeys,
   attestorKeys,
   receiptKeys,
   meteringKeys,
-} as const;
+};
 
 test("binding store creates, reads, lists, and versioned-enables a binding", { skip }, async () => {
   const store = createRemoteBindingStore(URL!);

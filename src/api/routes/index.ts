@@ -23,6 +23,7 @@ import { projectRoutes } from "./projects.ts";
 import { contextPolicyRoutes } from "./context-policy.ts";
 import { deploymentLayerRoutes } from "./deployment-layer.ts";
 import { egressAuditRoutes } from "./egress-audit.ts";
+import { remoteTurnRoutes } from "./remote-turn.ts";
 import { authBrokerRoutes } from "./auth-broker.ts";
 
 export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
@@ -60,5 +61,6 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...emojiRoutes,
   ...deploymentRoutes,
   ...egressAuditRoutes,
+  ...remoteTurnRoutes,
   ...authBrokerRoutes,
 ];

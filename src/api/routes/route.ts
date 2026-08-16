@@ -17,6 +17,7 @@ export interface BaseCtx {
   pathname: string;
   method: string;
   params: Record<string, string>;
+  rawBody: string;
 }
 
 export interface ApiCtx extends BaseCtx {

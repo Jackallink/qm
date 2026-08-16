@@ -45,6 +45,9 @@ const bindingInput: CreateBindingInput = {
   receiptKeys: [],
   meteringKeys: [],
   policySnapshotHash: "p".repeat(64),
+  networkPolicyId: "net-pol-1",
+  endpointAllowlist: ["https://api.deepseek.com"],
+  egressAudience: "urn:qm:egress:1",
   createdBy: "deployment-controller",
 };
 

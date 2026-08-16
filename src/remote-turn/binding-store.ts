@@ -34,6 +34,9 @@ export interface RemoteRuntimeBinding {
   tokenTtlMs: number;
   budgetCeilingUsd: number;
   policySnapshotHash: string;
+  networkPolicyId: string;
+  endpointAllowlist: string[];
+  egressAudience: string;
   createdBy: string;
   createdAt: number;
   disabledBy: string | null;
@@ -64,6 +67,9 @@ export interface CreateBindingInput {
   tokenTtlMs: number;
   budgetCeilingUsd: number;
   policySnapshotHash: string;
+  networkPolicyId: string;
+  endpointAllowlist: string[];
+  egressAudience: string;
   createdBy: string;
   coreVerificationKeys: KeySetEntry[];
   attestorKeys: KeySetEntry[];
@@ -99,6 +105,9 @@ interface BindingRow {
     metering: KeySetEntry[];
   };
   policy_snapshot_hash: string;
+  network_policy_id: string;
+  endpoint_allowlist: string[] | string;
+  egress_audience: string;
   created_by: string;
   created_at: number;
   disabled_by: string | null;
@@ -130,6 +139,13 @@ function rowToBinding(row: Record<string, unknown>): RemoteRuntimeBinding {
     tokenTtlMs: Number(r.token_ttl_ms),
     budgetCeilingUsd: Number(r.budget_ceiling_usd),
     policySnapshotHash: r.policy_snapshot_hash,
+    networkPolicyId: r.network_policy_id,
+    endpointAllowlist: Array.isArray(r.endpoint_allowlist)
+      ? r.endpoint_allowlist
+      : typeof r.endpoint_allowlist === "string"
+        ? (JSON.parse(r.endpoint_allowlist) as string[])
+        : [],
+    egressAudience: r.egress_audience,
     createdBy: r.created_by,
     createdAt: Number(r.created_at),
     disabledBy: r.disabled_by ?? null,
@@ -187,14 +203,17 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
         runtime_audience, transport_service_id, transport_certificate_pin, transport_source_auth_key_id, release_digest,
         release_attestation_key_id, receipt_key_set_version, metering_key_set_version,
         max_input_bytes, max_history_messages, max_output_bytes, max_runtime_ms, token_ttl_ms,
-        budget_ceiling_usd, key_sets, policy_snapshot_hash, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+        budget_ceiling_usd, key_sets, policy_snapshot_hash, network_policy_id, endpoint_allowlist, egress_audience,
+        created_by, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
       [
         input.bindingId, 1, true, input.configuredOrgId, input.allowedScopeId, input.protocolVersion,
         input.runtimeAudience, input.transportServiceId, input.transportCertificatePin, input.transportSourceAuthKeyId, input.releaseDigest,
         input.releaseAttestationKeyId, input.receiptKeySetVersion, input.meteringKeySetVersion,
         input.maxInputBytes, input.maxHistoryMessages, input.maxOutputBytes, input.maxRuntimeMs,
-        input.tokenTtlMs, input.budgetCeilingUsd, keySets, input.policySnapshotHash, input.createdBy, now,
+        input.tokenTtlMs, input.budgetCeilingUsd, keySets, input.policySnapshotHash,
+        input.networkPolicyId, JSON.stringify(input.endpointAllowlist), input.egressAudience,
+        input.createdBy, now,
       ],
     );
     return {

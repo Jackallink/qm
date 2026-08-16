@@ -74,6 +74,7 @@ async function ctx(
     pathname: url.pathname,
     method,
     params: {},
+    rawBody: body,
   };
 }
 

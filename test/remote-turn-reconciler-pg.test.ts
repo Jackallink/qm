@@ -79,6 +79,12 @@ const bindingBase: CreateBindingInput = {
   tokenTtlMs: 90_000,
   budgetCeilingUsd: 2.0,
   policySnapshotHash: "policy-1",
+
+  networkPolicyId: "net-pol-1",
+
+  endpointAllowlist: ["https://api.deepseek.com"],
+
+  egressAudience: "urn:qm:egress:1",
   createdBy: "deploy-ctl",
   coreVerificationKeys: [],
   attestorKeys: [],

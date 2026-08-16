@@ -118,6 +118,20 @@ export interface ServerDeps {
   deploymentLayer?: DeploymentLayerStore;
   brokeredServices?: () => readonly string[];
   deployDialTimeoutMs?: number;
+  remoteTurnStore?: import("../remote-turn/store.ts").RemoteTurnStore;
+  remoteTurnBindingStore?: import("../remote-turn/binding-store.ts").RemoteBindingStore;
+  remoteTurnTransportAuth?: import("../remote-turn/transport-auth.ts").TransportAuthVerifier;
+  remoteTurnAttestationVerifier?: ReturnType<typeof import("../remote-turn/attestation.ts").createAttestationVerifier>;
+  remoteTurnTurnVerifier?: {
+    verifyTurnToken: typeof import("../remote-turn/tokens.ts").verifyTurnToken;
+  };
+  remoteTurnAttestorClient?: {
+    pushLease(input: {
+      remoteTurnId: string;
+      executionLease: string;
+      executionLeaseHash: string;
+    }): Promise<{ ok: true } | { ok: false; reason: string }>;
+  };
   deployAppsDomain?: string;
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;

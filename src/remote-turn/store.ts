@@ -172,8 +172,25 @@ export interface OrphanRunRecord {
   leaseToken: string | null;
 }
 
+export interface PreClaimExpectationSnapshot {
+  remoteTurnId: string;
+  bindingId: string;
+  bindingVersion: number;
+  turnJtiHash: string;
+  attestationNonceHash: string;
+  intendedWorkloadIdentity: string;
+  releaseDigest: string;
+  policyDigest: string;
+  endpointAllowlist: string[];
+  egressAudience: string;
+  expiry: number;
+  singleUse: boolean;
+  version: number;
+}
+
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
+  getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null>;
   claim(input: ClaimInput): Promise<LeaseResult>;
   prepareDispatch(input: { remoteTurnId: string; leaseToken: string; envelope: DispatchEnvelope }): Promise<DispatchResult>;
   expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult>;
@@ -293,7 +310,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       await withPgTransaction(await pool.pool(), async (client) => {
         guardClientErrors(client);
         const { rows: bindingRows } = await client.query<Record<string, unknown>>(
-          `SELECT id, version, enabled, allowed_scope_id, max_input_bytes, max_history_messages, budget_ceiling_usd, release_digest, key_sets
+          `SELECT id, version, enabled, allowed_scope_id, max_input_bytes, max_history_messages, budget_ceiling_usd, release_digest, key_sets,
+                  policy_snapshot_hash, network_policy_id, endpoint_allowlist, egress_audience, runtime_audience, token_ttl_ms
            FROM remote_runtime_binding WHERE id=$1 FOR UPDATE`,
           [input.bindingId],
         );
@@ -354,6 +372,29 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           historyDigest,
         });
 
+        const endpointAllowlistOf = (b: Record<string, unknown>): string[] => {
+          const raw = b.endpoint_allowlist;
+          if (Array.isArray(raw)) return raw as string[];
+          if (typeof raw === "string") {
+            try {
+              const parsed = JSON.parse(raw) as unknown;
+              return Array.isArray(parsed) ? (parsed as string[]) : [];
+            } catch {
+              return [];
+            }
+          }
+          return [];
+        };
+        const computePolicyDigest = (b: Record<string, unknown>): string => {
+          const parts = [
+            b.policy_snapshot_hash as string,
+            b.network_policy_id as string,
+            JSON.stringify(endpointAllowlistOf(b)),
+            b.egress_audience as string,
+          ];
+          return sha256Hex(parts.join("|"));
+        };
+
         const admissionKey = sha256Hex(
           [input.coreRunId, String(bindingVersion), input.scopeId, input.conversationKey, inputDigest].join("|"),
         );
@@ -363,14 +404,19 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             id, core_run_id, admission_key, conversation_key, scope_id, actor_id, qm_session_id,
             governance_authorization_digest, governance_decision_id, binding_id, binding_version,
             input_digest, envelope_digest, history_digest, release_digest, receipt_key_snapshot, status, version,
+            policy_digest, endpoint_allowlist, egress_audience, pre_claim_expiry,
             pre_admission_expires_at, correlation_id, created_at, updated_at
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,1,
-            (SELECT extract(epoch from transaction_timestamp())) + $18, $19, $20, $20)`,
+            $18,$19,$20,$21,
+            (SELECT extract(epoch from transaction_timestamp())) + $22, $23, $24, $24)`,
           [
             remoteTurnId, input.coreRunId, admissionKey, input.conversationKey, input.scopeId, input.actorId,
             session.id, input.g0.governanceAuthorizationDigest, input.g0.governanceDecisionId,
             input.bindingId, bindingVersion, inputDigest, envelopeDigest, historyDigest,
-            binding!.release_digest as string, JSON.stringify(receiptKeySnapshot), "created", ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
+            binding!.release_digest as string, JSON.stringify(receiptKeySnapshot), "created",
+            computePolicyDigest(binding!), JSON.stringify(endpointAllowlistOf(binding!)), binding!.egress_audience as string,
+            Math.floor(createdAt / 1000) + Number(binding!.token_ttl_ms) / 1000,
+            ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
           ],
         );
         await onStep("remote-turn-insert", client);
@@ -524,9 +570,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       const nowMs = now();
 
       if (status === "admitted" && storedJtiHash === null) {
+        const workloadIdentity = `wl-${input.remoteTurnId}`;
         const { rows: updated } = await client.query<Record<string, unknown>>(
           `UPDATE remote_turn
-           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3,
+           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$8,
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
                pre_claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) + $6,
                version=version+1, updated_at=$5
@@ -537,6 +584,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             nowMs,
             PRE_CLAIM_WINDOW_SEC,
             Number(turn.version),
+            workloadIdentity,
           ],
         );
         const row = updated[0];
@@ -739,6 +787,37 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       [remoteTurnId],
     );
     return rows[0] ?? null;
+  }
+
+  async function getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null> {
+    const { rows } = await pool.query(
+      `SELECT id, binding_id, binding_version, turn_jti_hash, attestation_nonce_hash, workload_identity,
+              release_digest, policy_digest, endpoint_allowlist, egress_audience, pre_claim_expiry, status, version
+       FROM remote_turn WHERE id=$1`,
+      [remoteTurnId],
+    );
+    const row = rows[0];
+    if (!row || row.status !== "dispatching") return null;
+    const allowlist = Array.isArray(row.endpoint_allowlist)
+      ? (row.endpoint_allowlist as string[])
+      : typeof row.endpoint_allowlist === "string"
+        ? (JSON.parse(row.endpoint_allowlist) as string[])
+        : [];
+    return {
+      remoteTurnId: row.id as string,
+      bindingId: row.binding_id as string,
+      bindingVersion: Number(row.binding_version),
+      turnJtiHash: row.turn_jti_hash as string,
+      attestationNonceHash: row.attestation_nonce_hash as string,
+      intendedWorkloadIdentity: row.workload_identity as string,
+      releaseDigest: row.release_digest as string,
+      policyDigest: row.policy_digest as string,
+      endpointAllowlist: allowlist,
+      egressAudience: row.egress_audience as string,
+      expiry: Number(row.pre_claim_expiry),
+      singleUse: true,
+      version: Number(row.version),
+    };
   }
 
   async function bindingAttestorKeys(bindingId: string): Promise<KeySetEntry[]> {
@@ -1233,6 +1312,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
   return {
     admit,
+    getPreClaimExpectation,
     claim,
     prepareDispatch,
     expirePreClaim,
