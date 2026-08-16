@@ -27,6 +27,7 @@ const bindingInput: CreateBindingInput = {
   runtimeAudience: "urn:qm:v1:runtime:org-acme:test",
   transportServiceId: "svc-test",
   transportCertificatePin: "pin-test",
+  transportSourceAuthKeyId: "source-auth-key-1",
   releaseDigest: "a".repeat(64),
   releaseAttestationKeyId: "attestor-1",
   receiptKeySetVersion: 1,

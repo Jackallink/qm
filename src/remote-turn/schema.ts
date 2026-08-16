@@ -8,6 +8,7 @@ export const REMOTE_RUNTIME_BINDING_DDL = `CREATE TABLE IF NOT EXISTS remote_run
   runtime_audience TEXT NOT NULL,
   transport_service_id TEXT NOT NULL,
   transport_certificate_pin TEXT NOT NULL,
+  transport_source_auth_key_id TEXT NOT NULL,
   release_digest TEXT NOT NULL,
   release_attestation_key_id TEXT NOT NULL,
   receipt_key_set_version INT NOT NULL,
@@ -77,6 +78,8 @@ export const REMOTE_TURN_DDL = `CREATE TABLE IF NOT EXISTS remote_turn(
 
 export const REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS receipt_key_snapshot JSONB`;
 
+export const REMOTE_BINDING_SOURCE_AUTH_ALTER_DDL = `ALTER TABLE remote_runtime_binding ADD COLUMN IF NOT EXISTS transport_source_auth_key_id TEXT NOT NULL DEFAULT ''`;
+
 export const REMOTE_TURN_CORE_RUN_FK_DDL = `DO $fk$ BEGIN IF to_regclass('runs') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_core_run_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_core_run_fk FOREIGN KEY (core_run_id) REFERENCES runs(id) ON DELETE RESTRICT; END IF; END $fk$`;
 
 export const REMOTE_TURN_SESSION_FK_DDL = `DO $fk$ BEGIN IF to_regclass('sessions') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_session_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_session_fk FOREIGN KEY (qm_session_id) REFERENCES sessions(id) ON DELETE RESTRICT; END IF; END $fk$`;
@@ -133,6 +136,7 @@ export const REMOTE_TURN_AUDIT_READS_DDL = `CREATE TABLE IF NOT EXISTS remote_tu
 
 export const REMOTE_TURN_DDL_ALL = [
   REMOTE_RUNTIME_BINDING_DDL,
+  REMOTE_BINDING_SOURCE_AUTH_ALTER_DDL,
   REMOTE_TURN_DDL,
   REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL,
   REMOTE_TURN_CORE_RUN_FK_DDL,

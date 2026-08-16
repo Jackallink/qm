@@ -29,6 +29,7 @@ const bindingInput: CreateBindingInput = {
   runtimeAudience: "urn:qm:v1:runtime:org-acme:audit",
   transportServiceId: "audit-transport",
   transportCertificatePin: "sha256:testpin",
+  transportSourceAuthKeyId: "source-auth-key-1",
   releaseDigest: "d".repeat(64),
   releaseAttestationKeyId: "attestor-audit",
   receiptKeySetVersion: 1,

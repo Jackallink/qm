@@ -22,6 +22,7 @@ export interface RemoteRuntimeBinding {
   runtimeAudience: string;
   transportServiceId: string;
   transportCertificatePin: string;
+  transportSourceAuthKeyId: string;
   releaseDigest: string;
   releaseAttestationKeyId: string;
   receiptKeySetVersion: number;
@@ -51,6 +52,7 @@ export interface CreateBindingInput {
   runtimeAudience: string;
   transportServiceId: string;
   transportCertificatePin: string;
+  transportSourceAuthKeyId: string;
   releaseDigest: string;
   releaseAttestationKeyId: string;
   receiptKeySetVersion: number;
@@ -79,6 +81,7 @@ interface BindingRow {
   runtime_audience: string;
   transport_service_id: string;
   transport_certificate_pin: string;
+  transport_source_auth_key_id: string;
   release_digest: string;
   release_attestation_key_id: string;
   receipt_key_set_version: number;
@@ -115,6 +118,7 @@ function rowToBinding(row: Record<string, unknown>): RemoteRuntimeBinding {
     runtimeAudience: r.runtime_audience,
     transportServiceId: r.transport_service_id,
     transportCertificatePin: r.transport_certificate_pin,
+    transportSourceAuthKeyId: r.transport_source_auth_key_id,
     releaseDigest: r.release_digest,
     releaseAttestationKeyId: r.release_attestation_key_id,
     receiptKeySetVersion: Number(r.receipt_key_set_version),
@@ -180,14 +184,14 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
     await db.q(
       `INSERT INTO remote_runtime_binding(
         id, version, enabled, configured_org_id, allowed_scope_id, protocol_version,
-        runtime_audience, transport_service_id, transport_certificate_pin, release_digest,
+        runtime_audience, transport_service_id, transport_certificate_pin, transport_source_auth_key_id, release_digest,
         release_attestation_key_id, receipt_key_set_version, metering_key_set_version,
         max_input_bytes, max_history_messages, max_output_bytes, max_runtime_ms, token_ttl_ms,
         budget_ceiling_usd, key_sets, policy_snapshot_hash, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
       [
         input.bindingId, 1, true, input.configuredOrgId, input.allowedScopeId, input.protocolVersion,
-        input.runtimeAudience, input.transportServiceId, input.transportCertificatePin, input.releaseDigest,
+        input.runtimeAudience, input.transportServiceId, input.transportCertificatePin, input.transportSourceAuthKeyId, input.releaseDigest,
         input.releaseAttestationKeyId, input.receiptKeySetVersion, input.meteringKeySetVersion,
         input.maxInputBytes, input.maxHistoryMessages, input.maxOutputBytes, input.maxRuntimeMs,
         input.tokenTtlMs, input.budgetCeilingUsd, keySets, input.policySnapshotHash, input.createdBy, now,

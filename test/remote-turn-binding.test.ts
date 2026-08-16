@@ -64,6 +64,7 @@ const input = {
   runtimeAudience: "urn:qm:v1:runtime:org:local-deepseek:demo",
   transportServiceId: "demo-transport",
   transportCertificatePin: "pin-abc",
+  transportSourceAuthKeyId: "source-auth-key-1",
   releaseDigest: "a".repeat(64),
   releaseAttestationKeyId: "attestor-1",
   receiptKeySetVersion: 1,
