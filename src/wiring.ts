@@ -109,7 +109,7 @@ import {
   type SandboxRoute,
 } from "./sandbox/sandbox-routing.ts";
 import { createSandboxMigrationRunner, type SandboxMigrationRunner } from "./sandbox/sandbox-migration-runner.ts";
-import type { Sandbox } from "./sandbox/sandbox.ts";
+import type { Sandbox, SandboxHandle } from "./sandbox/sandbox.ts";
 import { withOperatorTokenFallback } from "./credentials/connector-token.ts";
 import {
   createAwsSecretsManagerSource,
@@ -763,6 +763,22 @@ export function buildApp(
     refreshCustomProviders,
     ...(config.textOnlyMode ? {} : { signals: runSignals }),
   });
+  const primeSandboxHandles = new Map<string, Promise<SandboxHandle>>();
+  const primeSandboxHandleFor = (scope: ScopeId): Promise<SandboxHandle> => {
+    const pending = sandbox
+      .provision(
+        [
+          { scopeId: runtimeOrgScope, mountPath: "global", mode: "ro" },
+          { scopeId: scope, mountPath: "", mode: "rw" },
+        ],
+        {},
+      )
+      .catch((error: unknown) => {
+        throw error;
+      });
+    primeSandboxHandles.set(scope, pending);
+    return pending;
+  };
   const adapters = new Map<HarnessId, Harness>([
     ["pi", piHarness],
     ...(config.textOnlyMode
@@ -810,6 +826,14 @@ export function buildApp(
                 configStore.getSoul(scope) ??
                 configStore.getSoul(`org:${config.orgId}`) ??
                 "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
+              ...(config.primeSandbox
+                ? {
+                    sandbox: {
+                      sandbox,
+                      handleFor: primeSandboxHandleFor,
+                    },
+                  }
+                : {}),
               resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
                 const grants = await approvalGrants.all();
                 return grants.some((g) => {

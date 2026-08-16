@@ -42,6 +42,7 @@ export interface Config {
   primeBinPath?: string;
   primeSessionDir?: string;
   primeArgs?: string;
+  primeSandbox?: boolean;
   opencodeModel?: string;
   codexModel?: string;
   codexBinPath?: string;
@@ -837,6 +838,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.PRIME_BIN ? { primeBinPath: env.PRIME_BIN } : {}),
     ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
     ...(env.PRIME_ARGS ? { primeArgs: env.PRIME_ARGS } : {}),
+    ...(env.PRIME_SANDBOX ? { primeSandbox: boolEnvStrict("PRIME_SANDBOX", env.PRIME_SANDBOX) } : {}),
     ...(env.CONNECTOR_SECRET_KEY ? { connectorSecretKey: env.CONNECTOR_SECRET_KEY } : {}),
     secretsBackend: secretsBackendEnvStrict(env.SECRETS_BACKEND, env.SECRETS_PREFIX ?? ""),
     secretsPrefix: env.SECRETS_PREFIX ?? "",
