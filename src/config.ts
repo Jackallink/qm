@@ -29,7 +29,7 @@ export interface Config {
   orgId: string;
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
-  harness: "mock" | "pi" | "opencode" | "codex" | "claude";
+  harness: "mock" | "pi" | "opencode" | "codex" | "claude" | "prime";
   textOnlyMode: boolean;
   securityPosture: SecurityPosture;
   sandboxBackend: "aws" | "disabled" | "local" | "sprites";
@@ -38,6 +38,10 @@ export interface Config {
   egressServiceHosts?: string[];
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   modelId?: string;
+  primeModel?: string;
+  primeBinPath?: string;
+  primeSessionDir?: string;
+  primeArgs?: string;
   opencodeModel?: string;
   codexModel?: string;
   codexBinPath?: string;
@@ -829,6 +833,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? { portalIdentitySecret: env.PORTAL_IDENTITY_SECRET ?? env.CORE_SIGNING_SECRET }
       : {}),
     requireSignedPortalIdentity: env.REQUIRE_SIGNED_PORTAL_IDENTITY === "1",
+    ...(env.PRIME_MODEL ? { primeModel: env.PRIME_MODEL } : {}),
+    ...(env.PRIME_BIN ? { primeBinPath: env.PRIME_BIN } : {}),
+    ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
+    ...(env.PRIME_ARGS ? { primeArgs: env.PRIME_ARGS } : {}),
     ...(env.CONNECTOR_SECRET_KEY ? { connectorSecretKey: env.CONNECTOR_SECRET_KEY } : {}),
     secretsBackend: secretsBackendEnvStrict(env.SECRETS_BACKEND, env.SECRETS_PREFIX ?? ""),
     secretsPrefix: env.SECRETS_PREFIX ?? "",

@@ -169,6 +169,7 @@ import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
+import { createPrimeHarness } from "./harness/prime-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { NonRetryableTurnError } from "./core/turn-error.ts";
@@ -793,6 +794,28 @@ export function buildApp(
           [
             "claude",
             createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks }),
+          ] as const,
+          [
+            "prime",
+            createPrimeHarness({
+              primeBin: config.primeBinPath,
+              provider: "deepseek",
+              model: config.primeModel ?? "deepseek-v4-flash",
+              sessionDirBase: config.primeSessionDir,
+              args: config.primeArgs ? config.primeArgs.split(",").filter(Boolean) : undefined,
+              env: {
+                DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "",
+              },
+              systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
+              resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
+                const grants = await approvalGrants.all();
+                return grants.some((g) => {
+                  if (g.approvalKey !== approvalKey) return false;
+                  if (g.scope === "always") return true;
+                  return g.scope === "session" && g.sessionId === sessionId;
+                });
+              },
+            }),
           ] as const,
           ["mock", createMockHarness()] as const,
         ]),

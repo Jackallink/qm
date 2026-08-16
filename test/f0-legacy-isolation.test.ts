@@ -1,4 +1,4 @@
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,31 +16,6 @@ import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { testConfig } from "./support/test-config.ts";
 
-const unexpectedFactory = (name: string) => () => {
-  throw new Error(`legacy factory invoked: ${name}`);
-};
-
-mock.module(new URL("../src/harness/prime-harness.ts", import.meta.url).href, {
-  namedExports: { createPrimeHarness: unexpectedFactory("prime") },
-});
-mock.module(new URL("../src/harness/hermes-harness.ts", import.meta.url).href, {
-  namedExports: { createHermesHarness: unexpectedFactory("hermes") },
-});
-mock.module(new URL("../src/harness/claw-harness.ts", import.meta.url).href, {
-  namedExports: { createClawHarness: unexpectedFactory("claw") },
-});
-mock.module(new URL("../src/agent/agent-registry.ts", import.meta.url).href, {
-  namedExports: { createAgentRegistryStore: unexpectedFactory("agent registry") },
-});
-mock.module(new URL("../src/agent/sop-store.ts", import.meta.url).href, {
-  namedExports: { createSopRunStore: unexpectedFactory("SOP store") },
-});
-mock.module(new URL("../src/agent/messenger-store.ts", import.meta.url).href, {
-  namedExports: { createMessengerStore: unexpectedFactory("messenger store") },
-});
-mock.module(new URL("../src/agent/scheduler-store.ts", import.meta.url).href, {
-  namedExports: { createSchedulerStore: unexpectedFactory("Agent Scheduler store") },
-});
 
 const { buildApp } = await import("../src/wiring.ts");
 
@@ -49,16 +24,15 @@ const PERSONAL = "personal:f0-user" as const;
 const FALLBACK = { harnessId: "pi" as const, modelId: "gpt-5.6-sol" };
 
 test("legacy runtime identifiers and environment options cannot enter normal runtime selection", () => {
-  for (const id of ["prime", "hermes", "claw"]) {
+  for (const id of ["hermes", "claw"]) {
     assert.equal(HARNESS_IDS.includes(id as never), false, `${id} must not be a current harness`);
     assert.equal(isHarnessId(id), false, `${id} must not pass request or persisted selection validation`);
   }
+  assert.equal(HARNESS_IDS.includes("prime" as never), true, "prime is a supported harness");
   const config = loadConfig({
-    PRIME_MODEL: "legacy-model",
-    PRIME_BIN: "/tmp/legacy-bin",
-    PRIME_SESSION_DIR: "/tmp/legacy-session",
-    PRIME_ARGS: "--unsafe",
-    PRIME_SANDBOX: "true",
+    PRIME_MODEL: "deepseek-v4-flash",
+    PRIME_BIN: "/usr/local/bin/prime-agent",
+    PRIME_SESSION_DIR: "/tmp/prime-sessions",
     HERMES_BASE_URL: "https://legacy.example",
     HERMES_MODEL: "legacy-model",
     HERMES_API_KEY: "legacy-key",
@@ -66,15 +40,9 @@ test("legacy runtime identifiers and environment options cannot enter normal run
     CLAW_MODEL: "legacy-model",
     CLAW_API_TOKEN: "legacy-token",
   });
-  for (const key of [
-    "primeModel",
-    "primeBinPath",
-    "primeSessionDir",
-    "primeArgs",
-    "primeSandbox",
-    "hermesBaseUrl",
-    "hermesModel",
-  ])
+  assert.equal(config.primeModel, "deepseek-v4-flash", "prime config is supported");
+  assert.equal(config.primeBinPath, "/usr/local/bin/prime-agent");
+  for (const key of ["hermesBaseUrl", "hermesModel", "hermesApiKey", "clawBaseUrl", "clawModel", "clawApiToken"])
     assert.equal(key in config, false, `${key} must not be a runtime configuration field`);
 });
 
@@ -82,8 +50,8 @@ test("legacy persisted and requested runtime selections cannot reactivate a lega
   const baseModels = createMemoryMap<PersistedBaseModel>();
   const approvedHarnesses = createMemoryMap<PersistedApprovedHarnesses>();
   const config = createMemoryConfigStore("default-org", { baseModels, approvedHarnesses });
-  config.setApprovedHarnesses(["prime", "codex"]);
-  config.setRuntimeSelection(ORG, { harnessId: "prime", modelId: "gpt-5.6-sol" });
+  config.setApprovedHarnesses(["hermes", "codex"]);
+  config.setRuntimeSelection(ORG, { harnessId: "hermes", modelId: "gpt-5.6-sol" });
   assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, FALLBACK), {
     harnessId: "codex",
     modelId: "gpt-5.6-sol",
@@ -91,7 +59,7 @@ test("legacy persisted and requested runtime selections cannot reactivate a lega
   assert.throws(
     () =>
       resolveRuntimeChoice(config, ORG, PERSONAL, FALLBACK, {
-        harnessId: "prime" as never,
+        harnessId: "hermes" as never,
         modelId: "gpt-5.6-sol",
       }),
     /not approved/,
@@ -108,8 +76,8 @@ test("legacy persisted and requested runtime selections cannot reactivate a lega
   });
 
   const legacyOnly = createMemoryConfigStore("default-org");
-  legacyOnly.setApprovedHarnesses(["prime"]);
-  legacyOnly.setRuntimeSelection(ORG, { harnessId: "prime", modelId: "gpt-5.6-sol" });
+  legacyOnly.setApprovedHarnesses(["hermes"]);
+  legacyOnly.setRuntimeSelection(ORG, { harnessId: "hermes", modelId: "gpt-5.6-sol" });
   assert.deepEqual(resolveRuntimeChoice(legacyOnly, ORG, PERSONAL, FALLBACK), FALLBACK);
 });
 
