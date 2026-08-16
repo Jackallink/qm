@@ -1,0 +1,11 @@
+{
+  "name": "yh-remote-turn-shared",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "jose": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
