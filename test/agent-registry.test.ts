@@ -49,3 +49,27 @@ test("registry persists across store instances (postgres)", { skip }, async () =
   await factory.pool.q("DROP TABLE agents_test").catch(() => undefined);
   await factory.pool.close();
 });
+
+test("registry supports the full online→stopping→stopped lifecycle", async () => {
+  const store = createAgentRegistryStore(createMemoryMap());
+  const m = manifest({ status: "online" });
+  await store.put("ws-1", m);
+  await store.put("ws-1", { ...m, status: "stopping" });
+  const stopping = await store.get("ws-1", m.id);
+  assert.equal(stopping!.status, "stopping", "online→stopping must be valid");
+  await store.put("ws-1", { ...m, status: "stopped" });
+  const stopped = await store.get("ws-1", m.id);
+  assert.equal(stopped!.status, "stopped", "stopping→stopped must be valid");
+  await assert.rejects(store.put("ws-1", { ...m, status: "online" }), /invalid status transition/i);
+});
+
+test("registry delete soft-deletes without an invalid transition", async () => {
+  const store = createAgentRegistryStore(createMemoryMap());
+  const m = manifest({ status: "online" });
+  await store.put("ws-1", m);
+  const deleted = await store.delete("ws-1", m.id);
+  assert.equal(deleted, true);
+  const got = await store.get("ws-1", m.id);
+  assert.ok(got, "soft delete keeps the row");
+  assert.equal(got!.status, "stopped");
+});

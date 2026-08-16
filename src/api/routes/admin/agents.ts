@@ -16,14 +16,30 @@ import { initAgentHealth, getAgentHealth, getAllAgentHealth, removeAgentHealth, 
 
 // 查询运行中的 Agent
 // 健康检查
-async function agentHealth(ctx: ApiCtx): Promise<void> { const h = getAgentHealth(ctx.params.id!); return sendJson(ctx.res, h ? 200 : 404, h ? { health: h } : { error: "not_found" }); }
-async function agentHealthHeartbeat(ctx: ApiCtx): Promise<void> { controlPlaneHeartbeat(ctx.params.id!); return sendJson(ctx.res, 200, { ok: true }); }
-async function allHealth(_ctx: ApiCtx): Promise<void> { return sendJson(_ctx.res, 200, { agents: getAllAgentHealth() }); }
+async function agentHealth(ctx: ApiCtx): Promise<void> {
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;
+  const h = getAgentHealth(ctx.params.id!);
+  return sendJson(ctx.res, h ? 200 : 404, h ? { health: h } : { error: "not_found" });
+}
+async function agentHealthHeartbeat(ctx: ApiCtx): Promise<void> {
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;
+  controlPlaneHeartbeat(ctx.params.id!);
+  return sendJson(ctx.res, 200, { ok: true });
+}
+async function allHealth(ctx: ApiCtx): Promise<void> {
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;
+  return sendJson(ctx.res, 200, { agents: getAllAgentHealth() });
+}
 
 export { agentHealth, agentHealthHeartbeat, allHealth };
-export async function listRunning(_ctx: ApiCtx): Promise<void> {
+export async function listRunning(ctx: ApiCtx): Promise<void> {
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;
   const running = getRunningAgents();
-  return sendJson(_ctx.res, 200, { running });
+  return sendJson(ctx.res, 200, { running });
 }
 
 // ---- Helpers ----
@@ -163,9 +179,19 @@ export async function updateAgent(ctx: ApiCtx): Promise<void> {
         existing.status = "error";
       }
     } else if (newStatus === "stopping") {
+      existing.status = "stopping";
+      await ctx.deps.agentRegistry.put(ws, existing);
       await stopAgent(id);
       removeAgentHealth(id);
       existing.status = "stopped";
+      await ctx.deps.agentRegistry.put(ws, existing);
+      audit(ctx.deps, {
+        principalId: authorized.id,
+        action: "agent.update",
+        resource: id,
+        scopeLabel: ws,
+      });
+      return sendJson(ctx.res, 200, { agent: existing });
     }
   }
 
@@ -193,6 +219,7 @@ export async function deleteAgent(ctx: ApiCtx): Promise<void> {
   const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
   if (!authorized) return;
   removeAgentHealth(id);
+  await stopAgent(id);
   const ok = await ctx.deps.agentRegistry.delete(ws, id);
   if (!ok) return sendJson(ctx.res, 404, { error: "not_found" });
   audit(ctx.deps, {

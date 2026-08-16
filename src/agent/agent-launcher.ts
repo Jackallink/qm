@@ -48,10 +48,16 @@ export async function launchAgent(manifest: AgentManifest): Promise<AgentRuntime
   return { agentId: manifest.id, status: "online", pid: child.pid!, sessionId: `agent-${manifest.id}-${Date.now().toString(36)}`, startedAt: Date.now() };
 }
 
+const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 export async function stopAgent(agentId: string): Promise<void> {
-  // Detached daemon: kill via pgrep on session dir
-  const { execSync } = await import("node:child_process");
-  try { execSync(`pkill -f "agent-sessions/.*/${agentId}" 2>/dev/null || true`, { stdio: "ignore" }); } catch { /* ok */ }
+  if (!AGENT_ID_PATTERN.test(agentId)) return;
+  const { execFileSync } = await import("node:child_process");
+  try {
+    execFileSync("pkill", ["-f", `agent-sessions/.*/${agentId}`], { stdio: "ignore" });
+  } catch {
+    // pkill exits 1 when no process matched; that is expected.
+  }
   runningAgents.delete(agentId);
 }
 

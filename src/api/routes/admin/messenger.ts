@@ -4,11 +4,13 @@
  */
 import { sendJson } from "../../http.ts";
 import type { ApiCtx, Route } from "../route.ts";
+import { authorizeAdmin, orgScope } from "../shared.ts";
 
 export async function sendMessage(ctx: ApiCtx): Promise<void> {
   const { id } = ctx.params;
   if (!id || !ctx.deps.messengerStore) return sendJson(ctx.res, 404, { error: "not_found" });
-  const body = (ctx.body ?? {}) as Record<string, unknown>;
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;  const body = (ctx.body ?? {}) as Record<string, unknown>;
   const receiverId = typeof body.receiverId === "string" ? body.receiverId : "";
   const mode = (typeof body.mode === "string" ? body.mode : "event") as "event" | "rpc" | "observe";
   const type = typeof body.type === "string" ? body.type : "";
@@ -21,21 +23,24 @@ export async function sendMessage(ctx: ApiCtx): Promise<void> {
 export async function getInbox(ctx: ApiCtx): Promise<void> {
   const { id } = ctx.params;
   if (!id || !ctx.deps.messengerStore) return sendJson(ctx.res, 404, { error: "not_found" });
-  const msgs = await ctx.deps.messengerStore.receive(id);
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;  const msgs = await ctx.deps.messengerStore.receive(id);
   return sendJson(ctx.res, 200, { messages: msgs });
 }
 
 export async function ackMessage(ctx: ApiCtx): Promise<void> {
   const { id, msgId } = ctx.params;
   if (!id || !msgId || !ctx.deps.messengerStore) return sendJson(ctx.res, 404, { error: "not_found" });
-  await ctx.deps.messengerStore.ack(msgId);
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;  await ctx.deps.messengerStore.ack(msgId);
   return sendJson(ctx.res, 200, { ok: true });
 }
 
 export async function subscribeEvents(ctx: ApiCtx): Promise<void> {
   const { id } = ctx.params;
   if (!id || !ctx.deps.messengerStore) return sendJson(ctx.res, 404, { error: "not_found" });
-  const body = (ctx.body ?? {}) as Record<string, unknown>;
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;  const body = (ctx.body ?? {}) as Record<string, unknown>;
   const eventTypes = Array.isArray(body.eventTypes) ? body.eventTypes as string[] : [];
   const sub = await ctx.deps.messengerStore.subscribe(id, eventTypes);
   return sendJson(ctx.res, 200, { subscription: sub });
@@ -44,7 +49,8 @@ export async function subscribeEvents(ctx: ApiCtx): Promise<void> {
 export async function heartbeat(ctx: ApiCtx): Promise<void> {
   const { id } = ctx.params;
   if (!id || !ctx.deps.messengerStore) return sendJson(ctx.res, 404, { error: "not_found" });
-  await ctx.deps.messengerStore.heartbeat(id);
+  const authorized = await authorizeAdmin(ctx, orgScope(ctx.deps));
+  if (!authorized) return;  await ctx.deps.messengerStore.heartbeat(id);
   return sendJson(ctx.res, 200, { ok: true });
 }
 
