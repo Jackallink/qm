@@ -153,7 +153,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
   const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
   /** Build the prime RPC command line that runs inside the sandbox. */
-  const sandboxCommandFor = (scope: ScopeId): string => {
+  const sandboxCommandFor = (scope: ScopeId, continueSession = true): string => {
     const { provider, model } = resolveProviderModel(scope);
     const cliPath = opts.sandbox!.cliPath ?? "/opt/prime-agent/dist/bundle/cli.js";
     const safe = scope.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -162,7 +162,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     if (provider) args.push("--provider", provider);
     if (model) args.push("--model", model);
     args.push("--session-dir", sessionDir);
-    args.push("--continue");
+    if (continueSession) args.push("--continue");
     args.push("--extension", "/opt/prime-agent/extensions/permission-gate.mjs");
     const systemPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt(scope) : opts.systemPrompt;
     if (systemPrompt) args.push("--system-prompt", systemPrompt);
@@ -251,7 +251,34 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     if (!opts.autoRefine) return;
     console.log(`[prime-harness] autoRefine triggered for ${scope}`);
     try {
-      const refineResp = await client.send({ type: "refine", global: true } as Parameters<typeof client.send>[0], { timeoutMs: 600_000 });
+      let refineClient = client;
+      let refineClientOwned = false;
+      if (opts.sandbox) {
+        // prime-agent 0.7.2 hangs on refine inside a --continue session;
+        // run refine in a fresh one-shot (no --continue) — global harness
+        // state is session-independent.
+        const optsForScope = await clientOptions(scope);
+        const handle = await opts.sandbox.handleFor(scope);
+        const envPrefix = Object.entries(optsForScope.env ?? {})
+          .filter(([, v]) => v !== undefined && v !== "")
+          .map(([k, v]) => `${k}=${shellQuote(v!)}`)
+          .join(" ");
+        optsForScope.io = createSandboxOneShotIo({
+          sandbox: opts.sandbox.sandbox,
+          handle,
+          command: sandboxCommandFor(scope, false),
+          envPrefix,
+          timeoutMs: 300_000,
+        });
+        refineClient = new PrimeRpcClient(optsForScope);
+        await refineClient.start();
+        refineClientOwned = true;
+      }
+      const refineResp = await refineClient.send(
+        { type: "refine", global: true } as Parameters<typeof client.send>[0],
+        { timeoutMs: 300_000 },
+      );
+      if (refineClientOwned) await refineClient.stop().catch(() => undefined);
       console.log(`[prime-harness] refine resp success=${refineResp.success} data=${JSON.stringify(refineResp.data ?? {}).slice(0, 200)}`);
       if (!refineResp.success) return;
       const data = (refineResp.data ?? {}) as { harnessStatePath?: string };
