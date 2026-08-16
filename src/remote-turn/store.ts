@@ -33,6 +33,8 @@ export interface AdmitInput {
   text: string;
   history: readonly RemoteTurnHistoryMessage[];
   threadRef: string;
+  surface: string;
+  deliveryTarget?: string;
 }
 
 export type RefusalReason =
@@ -271,7 +273,14 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, delivery_mode, lease_token, lease_expires_at, created_at)
        VALUES ($1,$2,'pending',$3,NULL,0,3,'remote_once',$4,$5,$6)
        ON CONFLICT (id) DO NOTHING`,
-      [input.coreRunId, input.threadRef, JSON.stringify({ text: input.text }), runLeaseToken, t0 + ADMISSION_WINDOW_MS, t0],
+      [input.coreRunId, input.threadRef, JSON.stringify({
+        surface: input.surface,
+        ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
+        text: input.text,
+        actor: { id: input.actorId, type: "internal" },
+        conversation: { kind: "dm", threadRef: input.threadRef, audience: [{ id: input.actorId, type: "internal" }] },
+        origin: { kind: "direct" },
+      }), runLeaseToken, t0 + ADMISSION_WINDOW_MS, t0],
     );
     if (runInserted !== 1) {
       await recordDenial(input.coreRunId, "remote_run_exists");

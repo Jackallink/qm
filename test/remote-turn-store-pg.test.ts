@@ -70,6 +70,8 @@ function admitInput(overrides: Partial<AdmitInput> = {}): AdmitInput {
     text: "hello remote",
     history: [],
     threadRef: `web:actor-1:thread-${randomUUID()}`,
+    surface: "web",
+    deliveryTarget: "web:actor-1:thread",
     ...overrides,
   };
 }
@@ -96,6 +98,21 @@ test("admission commits run, session, remote_turn, events, reservation, and leas
     assert.equal(run.rows[0].delivery_mode, "remote_once");
     assert.equal(run.rows[0].status, "pending");
     assert.equal(run.rows[0].lease_token, result.status === "admitted" ? result.runLeaseToken : null);
+    const persistedRequest = JSON.parse(run.rows[0].request as string) as {
+      surface?: string;
+      deliveryTarget?: string;
+      text?: string;
+      actor?: { id?: string };
+      conversation?: { kind?: string; threadRef?: string };
+      origin?: { kind?: string };
+    };
+    assert.equal(persistedRequest.surface, input.surface);
+    assert.equal(persistedRequest.deliveryTarget, input.deliveryTarget);
+    assert.equal(persistedRequest.text, input.text);
+    assert.equal(persistedRequest.actor?.id, input.actorId);
+    assert.equal(persistedRequest.conversation?.kind, "dm");
+    assert.equal(persistedRequest.conversation?.threadRef, input.threadRef);
+    assert.equal(persistedRequest.origin?.kind, "direct");
 
     const session = await p.query("SELECT * FROM sessions WHERE thread_ref=$1", [input.threadRef]);
     assert.equal(session.rows.length, 1);
@@ -349,3 +366,30 @@ for (const label of ["session-bound", "remote-turn-insert", "reservation+audit",
     }
   });
 }
+
+test("persisted remote run request carries delivery surface and target for runResultDelivery", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!);
+  const input = admitInput({
+    bindingId,
+    scopeId,
+    surface: "web",
+    deliveryTarget: `web:actor-1:delivery-${randomUUID()}`,
+  });
+  const result = await store.admit(input);
+  assert.equal(result.status, "admitted");
+  const { runResultDelivery } = await import("../src/delivery/run-result-delivery.ts");
+  const { createPostgresRunStore } = await import("../src/runs/postgres-run-store.ts");
+  const runtime = createPostgresRunStore(URL!);
+  try {
+    const run = await runtime.runs.get(input.coreRunId);
+    assert.ok(run, "run row must exist");
+    const runWithResult = { ...run, result: { status: "ok", reply: "hi" } as never, status: "done" as const };
+    const delivery = runResultDelivery(runWithResult as never);
+    assert.ok(delivery, "delivery must be computed for a remote run with surface+deliveryTarget");
+    assert.equal(delivery!.destination.type, "web");
+    assert.equal(delivery!.text, "hi");
+  } finally {
+    await runtime.close();
+  }
+});
