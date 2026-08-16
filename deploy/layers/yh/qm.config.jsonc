@@ -1,0 +1,31 @@
+// yh layer deployment config — committed; no secret values.
+// Shape follows the D0-L deployment directory convention (qm.config.jsonc).
+{
+  "orgId": "yh",
+  "target": "docker",
+  "core": {
+    "sessionStore": "postgres",
+    "runStore": "postgres",
+    "textOnly": false,
+    "port": 8081
+  },
+  "services": {
+    "core": {},
+    "web-ui": {},
+    "admin": {},
+    "portal": {},
+    "remote-runtime": {},
+    "attestor": {},
+    "egress-gw": {}
+  },
+  "postgres": {
+    "image": "postgres:16-alpine",
+    "pinned": true
+  },
+  "sandbox": {
+    "backend": "local"
+  },
+  "secrets": {
+    "file": ".env"
+  }
+}
