@@ -164,6 +164,58 @@ export function createEgressGateway(config: EgressConfig): EgressHandlers {
     async forward(input) {
       return forward(input);
     },
+    async forward(input) {
+      if (!input.token.startsWith("egt.")) return { ok: false, reason: "malformed token" };
+      let payload: { tokenId?: string };
+      try {
+        payload = JSON.parse(Buffer.from(input.token.slice(4), "base64url").toString("utf8")) as { tokenId?: string };
+      } catch {
+        return { ok: false, reason: "malformed token" };
+      }
+      if (!payload.tokenId) return { ok: false, reason: "malformed token" };
+      const record = await config.store.get(payload.tokenId);
+      if (!record) return { ok: false, reason: "unknown token" };
+      if (record.revoked) return { ok: false, reason: "revoked" };
+      if (now() >= record.expiryMs) return { ok: false, reason: "expired" };
+      let url: URL;
+      try {
+        url = new URL(input.url);
+      } catch {
+        return { ok: false, reason: "malformed url" };
+      }
+      const allowed = record.endpointAllowlist.some((entry) => {
+        try {
+          return new URL(entry).origin === url.origin;
+        } catch {
+          return false;
+        }
+      });
+      if (!allowed) return { ok: false, reason: "endpoint not allowed" };
+      if (!config.providerApiKey) return { ok: false, reason: "provider credential not configured" };
+      const fetchImpl = config.fetchImpl ?? fetch;
+      const headers: Record<string, string> = { ...input.headers, authorization: `Bearer ${config.providerApiKey}` };
+      try {
+        const res = await fetchImpl(input.url, { method: "POST", headers, body: JSON.stringify(input.body) });
+        const text = await res.text();
+        let parsed: unknown;
+        try {
+          parsed = text ? JSON.parse(text) : {};
+        } catch {
+          parsed = { raw: text };
+        }
+        let usage: { inputTokens: number; outputTokens: number; costUsd: number } | undefined;
+        const usageField = (parsed as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage;
+        if (usageField && typeof usageField === "object") {
+          const inputTokens = usageField.prompt_tokens ?? 0;
+          const outputTokens = usageField.completion_tokens ?? 0;
+          usage = { inputTokens, outputTokens, costUsd: (inputTokens / 1_000_000) * 0.27 + (outputTokens / 1_000_000) * 1.1 };
+        }
+        await config.store.addUsage(record.tokenId, usage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+        return { ok: true, status: res.status, body: parsed, usage };
+      } catch {
+        return { ok: false, reason: "upstream unreachable" };
+      }
+    },
     async usageStatement(input) {
       const record = await config.store.getByLease(input.executionLeaseHash);
       if (!record) return { ok: false, reason: "no token for lease" };
@@ -263,6 +315,16 @@ export function createEgressServer(handlers: EgressHandlers): ReturnType<typeof 
         usage: body.usage as { inputTokens: number; outputTokens: number; costUsd: number } | undefined,
       });
       out = { status: 200, body: { recorded: true } };
+    } else if (req.method === "POST" && url.pathname === "/forward") {
+      const result = await handlers.forward({
+        token: typeof body.token === "string" ? body.token : "",
+        url: typeof body.url === "string" ? body.url : "",
+        headers: typeof body.headers === "object" && body.headers !== null ? (body.headers as Record<string, string>) : {},
+        body: body.payload,
+      });
+      out = result.ok
+        ? { status: 200, body: { status: result.status, body: result.body, usage: result.usage } }
+        : { status: 403, body: { error: "forward_refused", reason: result.reason } };
     } else if (req.method === "POST" && url.pathname === "/forward") {
       const result = await handlers.forward({
         token: typeof body.token === "string" ? body.token : "",
