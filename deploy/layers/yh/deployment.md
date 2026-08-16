@@ -1,8 +1,15 @@
-# yh layer runbook (Gate 3 §8) — outline
+# yh layer runbook (Gate 3 §8)
 
-Status: draft. Each section is filled during Gate 3 Phase B implementation
-and exercised once against a fresh layer checkout before acceptance
-(08 §9). D0-T rows A13/B1/B5 carry the drill evidence links.
+Status: **drilled once** — deploy/rotate/rollback exercised on this host
+(2026-08-16), satisfying 08 §9 and D0-T row A13. Evidence:
+- Deploy: binding v1 created and enabled (deploy-agent)
+- Rotate: core key core-v1→core-v2, version 1→2 CAS; stale-version rotate
+  refused with `version_conflict`
+- Rollback: disable (v3, enabled=false) → re-enable (v4, enabled=true)
+- Live full-loop e2e: real Docker + Postgres + deepseek (G3-10)
+
+D0-T rows B1/B5/B6/B7/B8 keep their on-site confirmation steps for the
+production host; this host has executed the equivalent drills.
 
 ## Deploy order
 

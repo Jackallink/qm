@@ -452,3 +452,24 @@ test("getPreClaimExpectation is null once the turn is claimed or terminal", { sk
   const denied = await store.getPreClaimExpectation(randomUUID());
   assert.equal(denied, null);
 });
+
+test("oversize input and history beyond the bound are refused as remote_input_invalid", { skip }, async () => {
+  const { bindingId, scopeId } = await freshBinding();
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
+  const oversize = await store.admit(admitInput({ bindingId, scopeId, text: "x".repeat(2000) }));
+  assert.equal(oversize.status, "refused");
+  if (oversize.status === "refused") assert.equal(oversize.reason, "remote_input_invalid");
+
+  const tooManyHistory = await store.admit(admitInput({ bindingId, scopeId, history: Array.from({ length: 20 }, (_, i) => ({ role: "user" as const, text: `h${i}` })) }));
+  assert.equal(tooManyHistory.status, "refused");
+  if (tooManyHistory.status === "refused") assert.equal(tooManyHistory.reason, "remote_input_invalid");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT event_type FROM remote_turn_events WHERE payload::text LIKE '%remote_input_invalid%'");
+    assert.ok(rows.length >= 1, "the refusal must be durably audited");
+  } finally {
+    await p.end();
+  }
+});
