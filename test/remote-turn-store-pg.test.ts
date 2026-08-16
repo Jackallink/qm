@@ -1,6 +1,6 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { createRemoteTurnStore, type AdmitInput, type G0Context } from "../src/remote-turn/store.ts";
 import { createRemoteBindingStore, type CreateBindingInput } from "../src/remote-turn/binding-store.ts";
 import { computeEnvelopeDigest, computeHistoryDigest, computeInputDigest } from "../src/remote-turn/envelope.ts";
@@ -8,6 +8,11 @@ import { deriveWindowAnchorMs } from "../src/remote-turn/budget-ledger.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Remote Turn admission tests";
+
+const ABORT_KEY = (() => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return { kid: "core-k1", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+})();
 
 before(async () => {
   if (!URL) return;
@@ -91,7 +96,7 @@ async function freshBinding(bindingId = `binding-${randomUUID()}`, scopeId = `sc
 
 test("admission commits run, session, remote_turn, events, reservation, and lease atomically", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput({ bindingId, scopeId });
   const result = await store.admit(input);
   assert.equal(result.status, "admitted");
@@ -175,7 +180,7 @@ test("admission commits run, session, remote_turn, events, reservation, and leas
 
 test("governance mismatch refuses admission with a durable denial and no artifacts", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput({ bindingId, scopeId, g0: g0(scopeId, "conv-1", { actorId: "actor-other" }) });
   const result = await store.admit(input);
   assert.deepEqual(result, { status: "refused", reason: "governance_authorization_required" });
@@ -207,7 +212,7 @@ test("governance mismatch refuses admission with a durable denial and no artifac
 
 test("insufficient budget refuses admission without a reservation row", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const pg = (await import("pg")).default;
   const seed = new pg.Pool({ connectionString: URL! });
   const anchor = deriveWindowAnchorMs(Date.now(), 60 * 60_000);
@@ -234,7 +239,7 @@ test("insufficient budget refuses admission without a reservation row", { skip }
 
 test("concurrent admission on the same thread serializes: one admitted, one remote_turn_active", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const sharedThread = `web:actor-1:thread-${randomUUID()}`;
   const first = admitInput({ bindingId, scopeId, threadRef: sharedThread });
   const second = admitInput({ bindingId, scopeId, threadRef: sharedThread });
@@ -248,7 +253,7 @@ test("concurrent admission on the same thread serializes: one admitted, one remo
 
 test("admission with non-empty history persists a multi-frame history digest and envelope digest", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const history = [
     { role: "user" as const, text: "first question" },
     { role: "assistant" as const, text: "first answer" },
@@ -293,7 +298,7 @@ test("admission with non-empty history persists a multi-frame history digest and
 
 test("duplicate coreRunId is refused with a clean typed result, not a raw error", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const sharedThread = `web:actor-1:thread-${randomUUID()}`;
   const coreRunId = randomUUID();
   const first = await store.admit(admitInput({ bindingId, scopeId, coreRunId, threadRef: sharedThread }));
@@ -304,7 +309,7 @@ test("duplicate coreRunId is refused with a clean typed result, not a raw error"
 
 test("retried admission after a prior refusal stays idempotent instead of a seq collision", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const coreRunId = randomUUID();
   const g0Bad = g0(scopeId, `conv-${randomUUID()}`, { governanceDecisionId: "" });
   const refused = await store.admit(
@@ -376,7 +381,7 @@ for (const label of ["session-bound", "remote-turn-insert", "reservation+audit",
 
 test("persisted remote run request carries delivery surface and target for runResultDelivery", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput({
     bindingId,
     scopeId,
@@ -403,7 +408,7 @@ test("persisted remote run request carries delivery surface and target for runRe
 
 test("admit persists the pre-claim expectation snapshot for the dispatching turn", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput({ bindingId, scopeId });
   const result = await store.admit(input);
   assert.equal(result.status, "admitted");
@@ -438,7 +443,7 @@ test("admit persists the pre-claim expectation snapshot for the dispatching turn
 
 test("getPreClaimExpectation is null once the turn is claimed or terminal", { skip }, async () => {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput({ bindingId, scopeId });
   const result = await store.admit(input);
   assert.equal(result.status, "admitted");

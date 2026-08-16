@@ -188,6 +188,8 @@ import { createRemoteBindingStore, type RemoteBindingStore } from "./remote-turn
 import { createAttestationVerifier } from "./remote-turn/attestation.ts";
 import { createTransportAuth, type TransportAuthVerifier } from "./remote-turn/transport-auth.ts";
 import { createRemoteTurnKeyProvider } from "./remote-turn/tokens.ts";
+import { createRemoteTurnTransport } from "./remote-turn/transport.ts";
+import { createRemoteTurnReconciler, type RemoteTurnReconciler } from "./remote-turn/reconciler.ts";
 import { verifyTurnToken } from "./remote-turn/tokens.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
@@ -841,6 +843,42 @@ export function buildApp(
     ? createTransportAuth({ keys: config.remoteTurnTransportAuthKeys })
     : undefined;
   const remoteTurnAttestationVerifier = createAttestationVerifier();
+  const remoteTurnTransport = config.remoteTurnTransports
+    ? createRemoteTurnTransport({ transports: config.remoteTurnTransports })
+    : undefined;
+  const remoteTurnAttestorGateway =
+    remoteTurnStore && config.remoteTurnAttestorUrl
+      ? {
+          async querySandboxState(remoteTurnId: string): Promise<import("./remote-turn/reconciler.ts").SandboxState> {
+            try {
+              const res = await fetch(`${config.remoteTurnAttestorUrl}/sandbox-state?remoteTurnId=${encodeURIComponent(remoteTurnId)}`);
+              if (!res.ok) return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
+              const body = (await res.json()) as Partial<import("./remote-turn/reconciler.ts").SandboxState>;
+              return {
+                exists: body.exists === true,
+                running: body.running === true,
+                startProofSeen: body.startProofSeen === true,
+                terminationSeen: body.terminationSeen === true,
+                egressRevoked: body.egressRevoked === true,
+                terminationProofDigest: body.terminationProofDigest ?? null,
+              };
+            } catch {
+              return { exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null };
+            }
+          },
+        }
+      : undefined;
+  const remoteTurnReconciler: RemoteTurnReconciler | undefined =
+    remoteTurnStore && remoteTurnAttestorGateway
+      ? createRemoteTurnReconciler({
+          store: remoteTurnStore,
+          attestor: remoteTurnAttestorGateway,
+          ...(remoteTurnTransport ? { transport: remoteTurnTransport } : {}),
+          ...(remoteTurnBindingStore ? { bindings: remoteTurnBindingStore } : {}),
+          leaderLease,
+          errors,
+        })
+      : undefined;
   const remoteTurnAttestorClient =
     remoteTurnStore && config.remoteTurnAttestorUrl
       ? {
@@ -1472,6 +1510,7 @@ export function buildApp(
       reachDeniedNotifier?.start(config.insightsIntervalMs);
       wakeSweep.start();
       orphanedSignalSweeper?.start();
+      remoteTurnReconciler?.start();
       drain.start();
     },
     async releaseInFlightRuns() {
@@ -1488,6 +1527,8 @@ export function buildApp(
       blobSweeper.stop();
       wakeSweep.stop();
       orphanedSignalSweeper?.stop();
+      remoteTurnReconciler?.stop();
+      remoteTurnStore?.close?.();
       await Promise.all(workers.map((w) => w.stop(config.shutdownDrainMs))).catch(
         swallowAs("wiring: worker drain failed", undefined),
       );

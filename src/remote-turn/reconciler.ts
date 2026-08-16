@@ -1,4 +1,6 @@
 import { createSweeper, type Sweeper } from "../util/sweeper.ts";
+import type { RemoteBindingStore } from "./binding-store.ts";
+import type { RemoteTurnTransport } from "./transport.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { ScopeId } from "../types.ts";
@@ -29,6 +31,8 @@ export interface RemoteTurnReconciler {
 export interface ReconcileOptions {
   store: RemoteTurnStore;
   attestor: AttestorGateway;
+  transport?: RemoteTurnTransport;
+  bindings?: RemoteBindingStore;
   leaderLease?: LeaderLease;
   clock?: () => number;
   intervalMs?: number;
@@ -65,6 +69,7 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     const expiredActive = await opts.store.listExpiredActive();
     const expiredDispatching = await opts.store.listExpiredDispatching(nowMs);
     const cancelRequested = await opts.store.listCancelRequested();
+    const dispatching = await opts.store.listDispatching();
     for (const turn of [...parked, ...expiredActive, ...cancelRequested]) {
       await opts.store.renewRemoteLease(turn.remoteTurnId);
     }
@@ -94,6 +99,19 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     for (const turn of expiredActive) {
       const expired = await opts.store.expireActiveTurn(turn.remoteTurnId);
       if (expired) reconciled += 1;
+    }
+    for (const turn of dispatching) {
+      if (opts.transport && opts.bindings) {
+        const binding = await opts.bindings.getBinding(turn.bindingId);
+        const baseUrl = binding ? opts.transport.resolveService(binding.transportServiceId) : null;
+        if (baseUrl) {
+          const payload = await opts.store.getDispatchPayload(turn.remoteTurnId);
+          if (payload) {
+            const sent = await opts.transport.sendTurn(payload, binding!.transportServiceId, baseUrl);
+            if (sent.ok) reconciled += 1;
+          }
+        }
+      }
     }
     for (const turn of expiredDispatching) {
       const result = await opts.store.expirePreClaim(turn.remoteTurnId, nowMs);

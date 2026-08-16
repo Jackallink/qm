@@ -1,6 +1,6 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createPgPool } from "../src/persistence/pg-pool.ts";
 import {
   REMOTE_TURN_DDL_ALL,
@@ -19,6 +19,11 @@ import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Remote Turn recovery tests";
+
+const ABORT_KEY = (() => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return { kid: "core-k1", privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+})();
 
 async function seedTurnRow(
   p: import("pg").Pool,
@@ -129,7 +134,7 @@ async function freshBinding(bindingId = `binding-${randomUUID()}`, scopeId = `sc
 
 async function admittedTurn(now = Date.now()): Promise<{ remoteTurnId: string; coreRunId: string; runLeaseToken: string; scopeId: string }> {
   const { bindingId, scopeId } = await freshBinding();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const input = admitInput(bindingId, scopeId);
   const result = await store.admit(input);
   assert.equal(result.status, "admitted");
@@ -143,7 +148,7 @@ function envelope(turnJti = randomUUID(), attestationNonce = randomUUID()): Disp
 
 test("prepareDispatch persists JTI and nonce hashes and moves admitted to dispatching", { skip }, async () => {
   const { remoteTurnId, coreRunId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const enc = envelope();
   const result = await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
   assert.equal(result.ok, true);
@@ -170,7 +175,7 @@ test("prepareDispatch persists JTI and nonce hashes and moves admitted to dispat
 
 test("restart resends the same persisted envelope without regenerating JTI or nonce", { skip }, async () => {
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const enc = envelope();
   const first = await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
   assert.equal(first.ok, true);
@@ -204,7 +209,7 @@ test("restart resends the same persisted envelope without regenerating JTI or no
 
 test("a regenerated JTI or nonce on resume is rejected with no state change", { skip }, async () => {
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const enc = envelope();
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
 
@@ -225,7 +230,7 @@ test("a regenerated JTI or nonce on resume is rejected with no state change", { 
 
 test("a stale lease token cannot resume or dispatch", { skip }, async () => {
   const { remoteTurnId } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const result = await store.prepareDispatch({ remoteTurnId, leaseToken: randomUUID(), envelope: envelope() });
   assert.equal(result.ok, false);
   assert.ok(!result.ok && result.reason === "no_lease");
@@ -268,7 +273,7 @@ test("claimRemoteOnce is refused for a non-remote or mismatched-lease run", { sk
     }
   })();
   const localRunId = rows[0].id as string;
-  const remoteStore = createRemoteTurnStore(URL!);
+  const remoteStore = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   await remoteStore.admit(
     admitInput((await freshBinding()).bindingId, (await freshBinding()).scopeId),
   );
@@ -278,7 +283,7 @@ test("claimRemoteOnce is refused for a non-remote or mismatched-lease run", { sk
 
 test("expirePreClaim releases reservation and session lease and writes failed_pre_dispatch", { skip }, async () => {
   const { remoteTurnId, coreRunId, runLeaseToken, scopeId } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
 
   const pg = (await import("pg")).default;
@@ -314,7 +319,7 @@ test("expirePreClaim releases reservation and session lease and writes failed_pr
 
 test("expirePreClaim on a non-expired or wrong-state turn is a no-op", { skip }, async () => {
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
   const result = await store.expirePreClaim(remoteTurnId, Date.now());
   assert.equal(result, "not_expired");
@@ -331,7 +336,7 @@ test("expirePreClaim on a non-expired or wrong-state turn is a no-op", { skip },
 
 test("resume after the pre-claim deadline is refused with pre_claim_expired", { skip }, async () => {
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const enc = envelope();
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: enc });
 
@@ -362,7 +367,7 @@ test("resume after the pre-claim deadline is refused with pre_claim_expired", { 
 
 test("pre-admission deadline sweep rejects created/session_bound/admitted and releases artifacts", { skip }, async () => {
   const { remoteTurnId, coreRunId, scopeId } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
 
   const pg = (await import("pg")).default;
   const backfill = new pg.Pool({ connectionString: URL! });
@@ -397,7 +402,7 @@ test("pre-admission deadline sweep rejects created/session_bound/admitted and re
 
 test("admission_key partial unique index permits an identical re-send after a terminal state", { skip }, async () => {
   const { remoteTurnId, coreRunId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
 
   const pg = (await import("pg")).default;
@@ -442,8 +447,8 @@ test("cross-instance: two independent pools see the persisted dispatch and canno
   const DDL = [...REMOTE_TURN_RUN_DDL, ...REMOTE_TURN_SESSION_DDL, ...REMOTE_TURN_DDL_ALL, ...REMOTE_BUDGET_DDL];
   const poolA = createPgPool(URL!, DDL);
   const poolB = createPgPool(URL!, DDL);
-  const storeA = createRemoteTurnStore(URL!, { pool: poolA });
-  const storeB = createRemoteTurnStore(URL!, { pool: poolB });
+  const storeA = createRemoteTurnStore(URL!, { pool: poolA, abortKey: ABORT_KEY });
+  const storeB = createRemoteTurnStore(URL!, { pool: poolB, abortKey: ABORT_KEY });
 
   const admitted = await storeA.admit(input);
   assert.equal(admitted.status, "admitted");
@@ -463,7 +468,7 @@ test("cross-instance: two independent pools see the persisted dispatch and canno
 
 test("prepareDispatch refuses an admitted turn that was aborted", { skip }, async () => {
   const { remoteTurnId, runLeaseToken } = await admittedTurn();
-  const store = createRemoteTurnStore(URL!);
+  const store = createRemoteTurnStore(URL!, { abortKey: ABORT_KEY });
   const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
   assert.equal(abortResult.ok, false, "pre-dispatch abort is recorded but reported not_abortable");
   assert.ok(!abortResult.ok && abortResult.reason === "not_abortable");

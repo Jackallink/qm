@@ -1082,3 +1082,53 @@ test("terminateTurn refuses without termination evidence", { skip }, async () =>
   }
   void attestor;
 });
+
+test("reconciler resends the persisted envelope to dispatching turns via the transport", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const bindingId = `binding-${randomUUID()}`;
+  const scopeId = `scope-${randomUUID()}`;
+  const bindings = createRemoteBindingStore(URL!);
+  const binding = await bindings.createBinding({
+    ...bindingBase,
+    bindingId,
+    allowedScopeId: scopeId,
+    attestorKeys: attestor.keySet,
+    transportServiceId: "svc-resend",
+  });
+  const store = createRemoteTurnStore(URL!, {
+    abortKey: { kid: attestor.kid, privateKeyPem: attestor.privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const input = admitInput(bindingId, scopeId);
+  const admitted = await store.admit(input);
+  assert.equal(admitted.status, "admitted");
+  if (admitted.status !== "admitted") return;
+  const enc = envelope();
+  const dispatched = await store.prepareDispatch({
+    remoteTurnId: admitted.remoteTurnId,
+    leaseToken: admitted.runLeaseToken,
+    envelope: enc,
+  });
+  assert.equal(dispatched.ok, true);
+
+  const sent: Array<Record<string, unknown>> = [];
+  const transport = {
+    resolveService: (id: string) => (id === "svc-resend" ? "https://runtime.test" : null),
+    async sendTurn(payload: { remoteTurnId: string }, _serviceId: string, _baseUrl: string) {
+      sent.push(payload as unknown as Record<string, unknown>);
+      return { ok: true as const };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({
+    store,
+    attestor: { querySandboxState: async () => ({ exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null }) },
+    transport: transport as never,
+    bindings,
+  });
+  const result = await reconciler.sweep();
+  assert.equal(sent.length, 1, "the dispatching turn must be resent");
+  assert.equal(sent[0]!["remoteTurnId"], admitted.remoteTurnId);
+  assert.ok(typeof sent[0]!["turnToken"] === "string" && sent[0]!["turnToken"].length > 0, "the persisted turn token must be sent");
+  assert.equal(result.reconciled >= 1, true);
+
+  await bindings.close();
+});
