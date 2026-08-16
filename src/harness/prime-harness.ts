@@ -129,14 +129,25 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
         ...opts.env,
         ...(opts.egressProxyUrl
           ? {
-              HTTP_PROXY: opts.egressProxyUrl,
-              HTTPS_PROXY: opts.egressProxyUrl,
+              HTTP_PROXY: sandboxProxyUrl(opts, opts.egressProxyUrl, egressToken),
+              HTTPS_PROXY: sandboxProxyUrl(opts, opts.egressProxyUrl, egressToken),
               NO_PROXY: "",
-              ...(egressToken ? { PRIME_EGRESS_TOKEN: egressToken } : {}),
             }
           : {}),
       },
     };
+  };
+
+  const sandboxProxyUrl = (o: PrimeHarnessOptions, url: string, token?: string): string => {
+    let u = new URL(url);
+    if (o.sandbox && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
+      u.hostname = "host.docker.internal";
+    }
+    if (token) {
+      u.username = "x";
+      u.password = token;
+    }
+    return u.toString();
   };
 
   const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
