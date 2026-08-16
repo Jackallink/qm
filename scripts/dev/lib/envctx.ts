@@ -9,7 +9,7 @@ export interface AssembledEnv {
   env: Record<string, string>;
   anthropicKeySource: string;
   openaiKeySource: string;
-  harness: "pi" | "mock" | "opencode" | "codex" | "claude";
+  harness: "pi" | "mock" | "opencode" | "codex" | "claude" | "prime";
   liveEnvFile: string;
   warnings: string[];
 }
@@ -125,7 +125,7 @@ export async function assembleEnv(opts: {
     openaiKeySource = "the worktree .env";
   }
 
-  let harness: "pi" | "mock" | "opencode" | "codex" | "claude";
+  let harness: "pi" | "mock" | "opencode" | "codex" | "claude" | "prime";
   if (opts.callerEnv.HARNESS === "mock") {
     if (!opts.allowMock) throw new Error("HARNESS=mock requires DEV_INSTANCE_ALLOW_MOCK=1");
     harness = "mock";
@@ -137,6 +137,14 @@ export async function assembleEnv(opts: {
     if (harness === "codex" && !env.OPENAI_API_KEY) {
       throw new Error(
         "HARNESS=codex needs OPENAI_API_KEY (its CLI cannot do browser OAuth in a container) -- export it, or add it to the live env file or the worktree .env",
+      );
+    }
+  } else if (opts.callerEnv.HARNESS === "prime") {
+    harness = "prime";
+    env.HARNESS = "prime";
+    if (!env.DEEPSEEK_API_KEY) {
+      throw new Error(
+        "HARNESS=prime needs DEEPSEEK_API_KEY (prime defaults to the deepseek provider) -- export it, or add it to the live env file or the worktree .env",
       );
     }
   } else if (env.ANTHROPIC_API_KEY) {

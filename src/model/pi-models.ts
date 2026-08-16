@@ -113,11 +113,12 @@ export function contextTokenBudgetForModel(id: string): number | undefined {
 
 export function modelSupportedByHarness(id: string | undefined, harness: string): boolean {
   if (!id) return false;
-  if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id)) return harness === "pi" || harness === "mock";
+  if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id)) return harness === "pi" || harness === "mock" || harness === "prime";
   if (harness === "pi" || harness === "opencode" || harness === "mock") return Boolean(resolveModel(id));
   const provider = resolveModel(id)?.provider;
   if (harness === "claude") return provider === "anthropic" || /^claude-/i.test(id);
   if (harness === "codex") return provider === "openai" || /^(?:gpt-|o\d|codex|openai\/)/i.test(id);
+  if (harness === "prime") return provider === "deepseek" || provider === "openai" || Boolean(resolveModel(id));
   return false;
 }
 

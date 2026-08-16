@@ -477,10 +477,10 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
 function harnessEnvStrict(value: string | undefined): Config["harness"] {
   if (value === undefined || value.trim() === "") return "mock";
   const harness = value.trim();
-  if (harness === "mock" || harness === "pi" || harness === "opencode" || harness === "codex" || harness === "claude")
+  if (harness === "mock" || harness === "pi" || harness === "opencode" || harness === "codex" || harness === "claude" || harness === "prime")
     return harness;
   throw new Error(
-    `HARNESS=${JSON.stringify(value)} is not recognized — use mock, pi, opencode, codex, or claude, or unset it.`,
+    `HARNESS=${JSON.stringify(value)} is not recognized — use mock, pi, opencode, codex, claude, or prime, or unset it.`,
   );
 }
 
