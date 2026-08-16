@@ -109,6 +109,8 @@ function admitInput(bindingId: string, scopeId: string): AdmitInput {
     text: "hello remote",
     history: [],
     threadRef: `web:actor-1:thread-${randomUUID()}`,
+    surface: "web",
+    deliveryTarget: "web:actor-1:thread",
   };
 }
 

@@ -699,8 +699,6 @@ export function buildApp(
     config.sessionStore === "postgres"
       ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"))
       : createMemorySessionStore();
-  const remoteTurnStore: RemoteTurnStore | undefined =
-    config.sessionStore === "postgres" ? createRemoteTurnStore(requireDbUrl("SESSION_STORE")) : undefined;
   const runStoreKind = config.runStore;
   const runSignals: RunSignalStore =
     runStoreKind === "postgres"
@@ -810,6 +808,8 @@ export function buildApp(
       : createMemoryRunStore({ maxClaims: config.maxClaims });
   const runs: RunStore = runStore.runs;
   const ledger = runStore.ledger;
+  const remoteTurnStore: RemoteTurnStore | undefined =
+    config.sessionStore === "postgres" ? createRemoteTurnStore(requireDbUrl("SESSION_STORE"), { runs }) : undefined;
 
   let processes: ProcessRegistry | undefined;
   if (supportsProcessSessions(sandbox)) {
