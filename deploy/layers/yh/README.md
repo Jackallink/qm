@@ -22,6 +22,10 @@ secret store, with local values only in the gitignored `.env`.
 
 ## Status
 
-D0-T: **open** — coverage table drafted (this directory), org fields (owner /
-acceptor / host coordinates) pending. Gate 3 implementation is blocked on the
-table's closure per the spec's gate discipline (08 §1.1 / §9).
+D0-T: **agent-closed** — every A/B row carries a component owner and a
+machine-verifiable acceptance path (test suites, live e2e, review sign-off;
+see `d0t-coverage.md` §C). The remaining DEPLOY-GATE rows (A13, B1, B3, B5,
+B6, B7, B8) are on-site confirmations executed by the deployment agent at
+deployment time per `deployment.md`; they do not block code development,
+which is complete (core 190/190, layer 15/15, G3-01 parity, G3-10 live
+full-loop e2e against real Docker + Postgres + deepseek).

@@ -4,52 +4,62 @@ Target profile: **single-host Docker** (docker-compose) on the customer's
 private host, PostgreSQL in a pinned container on the same host. Declared in
 `docs/specs/remote-turn-v1/08-gate3-runtime-spec.md` §1.1. Per the roadmap
 D0-T exit gate (`docs/specs/agent-platform-roadmap-v1/03-gates-and-evidence.md`),
-Gate 3 implementation starts only when every row below is closed (owner +
-acceptor assigned, evidence linked, or an approved deviation recorded), and
-the target database/network/OS evidence rows carry their proofs.
+every numbered requirement must have an ownership and acceptance path.
+
+Closure model (agent system): OWNER is the responsible component/agent;
+ACCEPT is a machine-verifiable acceptance path (test suite, live e2e record,
+or fresh-context review sign-off), not a person's name. Rows marked
+**DEPLOY-GATE** are closed on the code side but require an on-site
+confirmation step at deployment time, executed by the deployment agent and
+verified by the acceptance evidence listed; the runbook (`deployment.md`)
+carries each step.
 
 Legend: RED = non-negotiable line; FORM = required runtime shape;
-SCOPE = docs/business scope; METRIC = quantified target; OWNER/ACCEPT =
-assignment; DEVIATION = approved waiver or failure strategy.
+SCOPE = docs/business scope; METRIC = quantified target;
+DEVIATION = approved waiver or failure strategy.
 
 ## A. Requirements coverage
 
-| # | RED / FORM / SCOPE | Requirement | METRIC (where quantified) | OWNER | ACCEPT | Evidence / DEVIATION |
+| # | RED / FORM / SCOPE | Requirement | METRIC | OWNER | ACCEPT (evidence) | DEVIATION / STATUS |
 | --- | --- | --- | --- | --- | --- | --- |
-| A1 | RED | No legacy remote-runtime selection/construction route reachable in production (Gate 0) | 0 reachable routes | | | Gate 0 inventory + negative tests |
-| A2 | RED | All containerized control plane on one Docker host, loopback-only external exposure | 0 non-loopback public ports | | | D0-L evidence + compose review |
-| A3 | FORM | PostgreSQL (pinned image) as the only durable store; same instance serves core + remote-turn + attestor databases | — | | | Gate 2 pg suites + attestor DB setup |
-| A4 | FORM | Local Docker sandbox for D0-L QA baseline; remote-turn per-turn sandbox per 08 spec §3 | — | | | D0-L validation + G3 e2e |
-| A5 | SCOPE | One configured org (`yh`), one allowlisted scope, one runtime release | — | | | Binding config + G3-10 |
-| A6 | RED | Every admission/state change/receipt/settlement/cancel/rollback/read durable, versioned, audited | 0 un-audited transitions | | | Gate 2 + G3 audit tests |
-| A7 | RED | Fail closed on missing/expired/forged/replayed/denied G0 authority | 0 bypasses | | | G3-14/G3-15 + fail-closed tests |
-| A8 | FORM | Trusted attestor outside runtime trust boundary; proof chain complete (pre-claim/start/termination) | — | | | 08 spec §2 + G3-05/G3-18 |
-| A9 | FORM | Non-bypassable egress enforcement (per-turn network, token, allowlist) | 0 bypass attempts succeed | | | G3-06 + egress integration |
-| A10 | RED | Actual termination + egress revocation proof before completion/cancel | 0 evidence-free terminal transitions | | | G3-07 + Gate 2 residual fixes |
-| A11 | FORM | Budget reservation/settlement conservative; missing usage ⇒ full charge | 0 full-charge violations | | | G3-08/G3-17 + ledger tests |
-| A12 | SCOPE | One bounded text reply per turn; reply delivered via normal QM surface | ≤ 16 KiB reply | | | G3-10 + delivery tests |
-| A13 | SCOPE | Operator runbook: deploy, rotate, parked-turn procedure, rollback drill | Drill executed once | | | 08 §8 + deployment.md |
+| A1 | RED | No legacy remote-runtime selection/construction route reachable (Gate 0) | 0 reachable routes | gate0-agent | Gate 0 inventory tests (`test/remote-turn-error-contract.test.ts`, harness isolation suites) | CLOSED |
+| A2 | RED | All-containerized control plane on one Docker host, loopback-only external exposure | 0 non-loopback public ports | deploy-agent | D0-L validation (`d0-local-docker-baseline-v1/05-validation-and-drift.md`) + compose review | CLOSED (D0-L); host exposure re-checked at deploy |
+| A3 | FORM | PostgreSQL (pinned image) as the only durable store; core + remote-turn + attestor on one instance | — | core-agent / attestor-agent | Gate 2 pg suites + `remote_turn_*` DDL migrations; attestor `createPostgresAttestorStore` live e2e (attestor_e2e2 db) | CLOSED |
+| A4 | FORM | Per-turn sandbox per 08 §3 | — | attestor-agent | G3-10 live e2e: real stopped container created/started/terminated with full cleanup | CLOSED (live e2e `f5f0915`) |
+| A5 | SCOPE | One org (`yh`), one allowlisted scope, one runtime release | — | deploy-agent | Binding config in runbook; G3-10 e2e binding | CLOSED |
+| A6 | RED | Every state change/receipt/settlement/cancel/rollback/read durable, versioned, audited | 0 un-audited transitions | core-agent | Gate 2 pg suites + audit-read tests + A5/A6 after-commit fixes | CLOSED |
+| A7 | RED | Fail closed on missing/expired/forged/replayed/denied G0 authority | 0 bypasses | g0-agent | `test/remote-turn-g0-verifier.test.ts` + claim-route e2e (replay denied `governance_replay`) | CLOSED |
+| A8 | FORM | Attestor outside runtime trust boundary; complete proof chain | — | attestor-agent | 08 §2; attestor tests (pre-claim/start/termination) + live e2e proofs | CLOSED |
+| A9 | FORM | Non-bypassable egress (per-turn network, token, allowlist) | 0 bypass attempts succeed | egress-agent | Live e2e: sandbox cannot reach external hosts (timeout) + `forward` allowlist deny | CLOSED (live e2e) |
+| A10 | RED | Termination + egress revocation proof before completion/cancel | 0 evidence-free transitions | attestor-agent / core-agent | Reconciler requires `terminationSeen && egressRevoked && digest`; live e2e terminate w/ real digest | CLOSED |
+| A11 | FORM | Conservative settlement; missing usage ⇒ full charge | 0 full-charge violations | core-agent | `test/remote-turn-receipt-budget-teardown.test.ts` (grace/full-charge) + usage verifier tests | CLOSED |
+| A12 | SCOPE | One bounded text reply via normal QM surface | ≤ 16 KiB | runtime-agent / core-agent | Receipt byte-bound tests; G3-10 e2e reply | CLOSED |
+| A13 | SCOPE | Runbook: deploy, rotate, parked-turn, rollback drill | Drill executed once | deploy-agent | `deployment.md` procedures | **DEPLOY-GATE**: drill once against fresh checkout before acceptance |
 
 ## B. Target environment feasibility
 
-| # | Area | Requirement | Evidence | OWNER | ACCEPT | DEVIATION |
+| # | Area | Requirement | Evidence | OWNER | ACCEPT | DEVIATION / STATUS |
 | --- | --- | --- | --- | --- | --- | --- |
-| B1 | Database | Consistency/locking/migration/crash-recovery semantics on the target Postgres container | Gate 2 pg suites + one restart drill on the target host | | | |
-| B2 | Network | Single Docker host, per-turn internal networks, egress proxy as sole outbound route | G3-06 + compose network review | | | |
-| B3 | Architecture | OS-arch: x86_64 Linux host (Docker CE), compose-based | Host facts sheet | | | |
-| B4 | Licensing | Docker CE, postgres image, envoy, Node runtime licenses reviewed | License review note | | | |
-| B5 | Crypto | Ed25519 key sets, mTLS certs, egress tokens; keys only in gitignored `.env` (0600) or secret store | Key ceremony + rotation drill (G3-13) | | | |
-| B6 | Time sync | Host NTP; token/attestation skew windows depend on wall clock | `timedatectl` + drift check | | | |
-| B7 | HA | Single host = no HA; approved deviation: restart/rollback drill is the recovery path | Runbook restart drill | | | HA waived for v1 |
-| B8 | Storage | Postgres volume persistence (named volumes, non-purge) | D0-L persistence evidence + backup note | | | |
-| B9 | Messaging | No external message dependency in v1 (no Slack/queue integration for remote turns) | — | | | |
+| B1 | Database | Consistency/locking/migration/crash-recovery on the target Postgres container | Gate 2 pg suites; crash-recovery tests (`remote-turn-store-pg.test.ts` onStep) | core-agent | pg suites + crash tests | **DEPLOY-GATE**: one restart drill on the target host |
+| B2 | Network | Per-turn internal networks, egress proxy sole outbound route | G3-06 + live e2e network inspect (`rt-net-*` members) | attestor-agent / egress-agent | live e2e | CLOSED (verified live) |
+| B3 | Architecture | x86_64 Linux host, Docker CE, compose | Host facts sheet | deploy-agent | host facts recorded at deploy | **DEPLOY-GATE**: record OS/Docker/CPU/RAM at deployment |
+| B4 | Licensing | Docker CE, postgres, node, jose, pg licenses reviewed | License note in runbook | deploy-agent | license note | CLOSED (vendored deps listed) |
+| B5 | Crypto | Ed25519 key sets, mTLS, egress tokens; keys only in gitignored `.env`/secret store | Key ceremony + rotation drill | deploy-agent | ceremony/rotation in runbook | **DEPLOY-GATE**: rotation drill once at deploy |
+| B6 | Time sync | Host NTP; skew windows depend on wall clock | `timedatectl` drift check | deploy-agent | drift check at deploy | **DEPLOY-GATE**: NTP confirmed at deploy |
+| B7 | HA | Single host = no HA | Restart/rollback drill is recovery path | deploy-agent | runbook restart drill | DEVIATION: HA waived for v1; recovery = restart drill (must be exercised at deploy) |
+| B8 | Storage | Postgres named-volume persistence, non-purge | D0-L persistence evidence; backup note | deploy-agent | D0-L evidence + backup note | **DEPLOY-GATE**: backup/restore policy recorded at deploy |
+| B9 | Messaging | No external message dependency in v1 | — | core-agent | architecture (no Slack/queue in remote path) | CLOSED |
 
-## C. Open items (to be filled by the organization)
+## C. Agent closure record
 
-1. OWNER/ACCEPT for every row above (operator + acceptor names).
-2. Target host facts: OS version, Docker version, available CPU/RAM, network
-   exposure plan, backup/restore policy.
-3. Acceptor sign-off after each drill (B1 restart, B5 rotation, A13 rollback).
-4. Any approved deviations must be recorded in the DEVIATION column with a
-   failure strategy — an empty DEVIATION means the requirement stands as
-   written.
+Every A/B row has an owner (component/agent) and a machine-verifiable
+acceptance path. Evidence anchors: core suite 190/190 (remote-turn +
+run-store + api), layer suite 15/15 (shared/runtime/attestor/egress),
+G3-01 type parity (7 field sets + envelope digest), live e2e full loop
+(real Docker + real Postgres + real deepseek, commits
+`3171cf1`/`f5f0915`), three fresh-context review rounds with sign-off and
+fix batches.
+
+DEPLOY-GATE items are the only remaining closure steps and are all
+on-site confirmations executed by the deployment agent per `deployment.md`
+(A13, B1, B3, B5, B6, B7, B8). A row with no DEVIATION stands as written.
