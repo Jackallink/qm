@@ -453,3 +453,22 @@ test("cross-instance: two independent pools see the persisted dispatch and canno
   await storeA.close();
   await storeB.close();
 });
+
+test("prepareDispatch refuses an admitted turn that was aborted", { skip }, async () => {
+  const { remoteTurnId, runLeaseToken } = await admittedTurn();
+  const store = createRemoteTurnStore(URL!);
+  const abortResult = await store.abort({ remoteTurnId, actor: "actor-1" });
+  assert.equal(abortResult.ok, false, "pre-dispatch abort is recorded but reported not_abortable");
+  assert.ok(!abortResult.ok && abortResult.reason === "not_abortable");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT abort_requested_at FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.ok(rows[0].abort_requested_at !== null, "the abort must be durably recorded");
+  } finally {
+    await p.end();
+  }
+  const result = await store.prepareDispatch({ remoteTurnId, leaseToken: runLeaseToken, envelope: envelope() });
+  assert.equal(result.ok, false, "a dispatched envelope must not be issued after a recorded abort");
+  assert.ok(!result.ok && result.reason === "not_dispatchable");
+});

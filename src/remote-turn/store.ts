@@ -529,7 +529,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
                pre_claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) + $6,
                version=version+1, updated_at=$5
-           WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7
+           WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7 AND abort_requested_at IS NULL
            RETURNING version, pre_claim_expires_at, dispatch_attempt`,
           [
             input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
