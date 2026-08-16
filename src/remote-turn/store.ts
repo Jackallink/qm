@@ -188,9 +188,23 @@ export interface PreClaimExpectationSnapshot {
   version: number;
 }
 
+export interface UsageStatementRecord {
+  remoteTurnId: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  endpoint: string;
+  statementDigest: string;
+  receivedAt: number;
+}
+
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
   getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null>;
+  recordUsageStatement(input: UsageStatementRecord): Promise<{ ok: true; applied: boolean } | { ok: false; reason: "unknown_turn" }>;
+  advanceTeardown(remoteTurnId: string, graceMs: number): Promise<"teardown_pending" | "parked" | "not_ready" | "no_receipt">;
+  getUsageStatement(remoteTurnId: string): Promise<UsageStatementRecord | null>;
+  getExecutionLeaseHash(remoteTurnId: string): Promise<string | null>;
   claim(input: ClaimInput): Promise<LeaseResult>;
   prepareDispatch(input: { remoteTurnId: string; leaseToken: string; envelope: DispatchEnvelope }): Promise<DispatchResult>;
   expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult>;
@@ -901,6 +915,73 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     });
   }
 
+  async function recordUsageStatement(input: UsageStatementRecord): Promise<
+    { ok: true; applied: boolean } | { ok: false; reason: "unknown_turn" }
+  > {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows: turnRows } = await client.query<{ id: string }>(
+        "SELECT id FROM remote_turn WHERE id=$1",
+        [input.remoteTurnId],
+      );
+      if (!turnRows[0]) return { ok: false as const, reason: "unknown_turn" as const };
+      const { rowCount } = await client.query(
+        `INSERT INTO remote_turn_usage_statements(remote_turn_id, input_tokens, output_tokens, cost_usd, endpoint, statement_digest, received_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (remote_turn_id) DO NOTHING`,
+        [input.remoteTurnId, input.inputTokens, input.outputTokens, input.costUsd, input.endpoint, input.statementDigest, input.receivedAt],
+      );
+      await writeEvent(client, input.remoteTurnId, rowCount === 1 ? "usage_statement" : "duplicate_usage", {
+        costUsd: input.costUsd,
+        statementDigest: input.statementDigest,
+      });
+      return { ok: true as const, applied: rowCount === 1 };
+    });
+  }
+
+  async function getExecutionLeaseHash(remoteTurnId: string): Promise<string | null> {
+    const { rows } = await pool.query("SELECT execution_lease_hash FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    const hash = rows[0]?.execution_lease_hash;
+    return typeof hash === "string" && hash.length > 0 ? hash : null;
+  }
+
+  async function getUsageStatement(remoteTurnId: string): Promise<UsageStatementRecord | null> {
+    const { rows } = await pool.query(
+      "SELECT remote_turn_id, input_tokens, output_tokens, cost_usd, endpoint, statement_digest, received_at FROM remote_turn_usage_statements WHERE remote_turn_id=$1",
+      [remoteTurnId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      remoteTurnId: row.remote_turn_id as string,
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      costUsd: Number(row.cost_usd),
+      endpoint: row.endpoint as string,
+      statementDigest: row.statement_digest as string,
+      receivedAt: Number(row.received_at),
+    };
+  }
+
+  async function advanceTeardown(remoteTurnId: string, graceMs: number): Promise<
+    "teardown_pending" | "parked" | "not_ready" | "no_receipt"
+  > {
+    const { rows } = await pool.query(
+      "SELECT status, updated_at FROM remote_turn WHERE id=$1",
+      [remoteTurnId],
+    );
+    const row = rows[0];
+    if (!row) return "no_receipt" as const;
+    if (row.status !== "reply_received") return "no_receipt" as const;
+    const usage = await getUsageStatement(remoteTurnId);
+    if (usage) {
+      return beginTeardown({ remoteTurnId, trustedUsageUsd: usage.costUsd, invalidMetering: false });
+    }
+    if (now() - Number(row.updated_at) >= graceMs) {
+      return beginTeardown({ remoteTurnId, trustedUsageUsd: null, invalidMetering: false });
+    }
+    return "not_ready" as const;
+  }
+
   async function beginTeardown(input: BeginTeardownInput): Promise<"teardown_pending" | "parked" | "not_ready"> {
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
@@ -1313,6 +1394,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   return {
     admit,
     getPreClaimExpectation,
+    recordUsageStatement,
+    advanceTeardown,
+    getUsageStatement,
+    getExecutionLeaseHash,
     claim,
     prepareDispatch,
     expirePreClaim,

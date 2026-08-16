@@ -147,6 +147,83 @@ async function claim(ctx: ApiCtx): Promise<void> {
   });
 }
 
+async function usage(ctx: ApiCtx): Promise<void> {
+  const transport = await verifyTransport(ctx);
+  if (!transport.ok) {
+    sendTransportFailure(ctx, transport);
+    return;
+  }
+  const deps = ctx.deps;
+  if (!deps.remoteTurnStore || !deps.remoteTurnAttestationVerifier) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const body = bodyOf(ctx);
+  const statementJws = str(body.statement);
+  const remoteTurnId = str(body.remoteTurnId);
+  if (!statementJws || !remoteTurnId) {
+    badRequest(ctx, "statement and remoteTurnId are required");
+    return;
+  }
+  const leaseHash = await deps.remoteTurnStore.getExecutionLeaseHash(remoteTurnId);
+  if (!leaseHash) {
+    notFound(ctx, "turn has no execution lease");
+    return;
+  }
+  const claims = await deps.remoteTurnAttestationVerifier.verifyUsageStatement(statementJws, {
+    meteringKeySet: transport.binding.meteringKeys,
+    expected: { remoteTurnId, executionLeaseHash: leaseHash },
+  });
+  if (!claims) {
+    unauthorized(ctx, "usage statement verification failed");
+    return;
+  }
+  const record = await deps.remoteTurnStore.recordUsageStatement({
+    remoteTurnId,
+    inputTokens: claims.usage.inputTokens,
+    outputTokens: claims.usage.outputTokens,
+    costUsd: claims.costUsd,
+    endpoint: claims.endpoint,
+    statementDigest: sha256Hex(statementJws),
+    receivedAt: Date.now(),
+  });
+  if (!record.ok) {
+    notFound(ctx, "turn not found");
+    return;
+  }
+  const outcome = await deps.remoteTurnStore.advanceTeardown(remoteTurnId, deps.remoteTurnUsageGraceMs ?? 15_000);
+  sendJson(ctx.res, 200, { status: "recorded", applied: record.applied, teardown: outcome });
+}
+
+async function receipt(ctx: ApiCtx): Promise<void> {
+  const transport = await verifyTransport(ctx);
+  if (!transport.ok) {
+    sendTransportFailure(ctx, transport);
+    return;
+  }
+  const deps = ctx.deps;
+  if (!deps.remoteTurnStore) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const body = bodyOf(ctx);
+  const remoteTurnId = str(body.remoteTurnId);
+  const receiptToken = str(body.receipt);
+  if (!remoteTurnId || !receiptToken) {
+    badRequest(ctx, "remoteTurnId and receipt are required");
+    return;
+  }
+  const result = await deps.remoteTurnStore.receiveReceipt({ remoteTurnId, receiptToken });
+  if (!result.ok) {
+    sendJson(ctx.res, 409, { error: "receipt_refused", reason: result.reason });
+    return;
+  }
+  const outcome = await deps.remoteTurnStore.advanceTeardown(remoteTurnId, deps.remoteTurnUsageGraceMs ?? 15_000);
+  sendJson(ctx.res, 200, { status: "receipt_received", teardown: outcome });
+}
+
 export const remoteTurnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/remote-turn/claim", auth: "public", handle: claim },
+  { method: "POST", path: "/v1/remote-turn/receipt", auth: "public", handle: receipt },
+  { method: "POST", path: "/v1/remote-turn/usage", auth: "public", handle: usage },
 ];

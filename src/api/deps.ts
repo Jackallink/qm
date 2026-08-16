@@ -132,6 +132,7 @@ export interface ServerDeps {
       executionLeaseHash: string;
     }): Promise<{ ok: true } | { ok: false; reason: string }>;
   };
+  remoteTurnUsageGraceMs?: number;
   deployAppsDomain?: string;
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;

@@ -756,3 +756,111 @@ test("late receipt after completion records a duplicate_receipt audit event with
     await p.end();
   }
 });
+
+
+async function receiptReady(): Promise<{
+  store: ReturnType<typeof createRemoteTurnStore>;
+  remoteTurnId: string;
+  receiptToken: string;
+}> {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  await startTurn(prepared);
+  const receiptToken = await prepared.receipt.sign({
+    ...receiptPayload({}, computeInputDigest("hello remote")),
+    remoteTurnId,
+    executionLeaseHash: prepared.executionLeaseHash,
+  });
+  const received = await store.receiveReceipt({ remoteTurnId, receiptToken });
+  assert.equal(received.ok, true);
+  return { store, remoteTurnId, receiptToken };
+}
+
+test("usage statement records idempotently; advanceTeardown with usage settles partial", { skip }, async () => {
+  const { store, remoteTurnId, receiptToken } = await receiptReady();
+  const recorded = await store.recordUsageStatement({
+    remoteTurnId,
+    inputTokens: 100,
+    outputTokens: 50,
+    costUsd: 0.05,
+    endpoint: "https://api.deepseek.com/v1/chat/completions",
+    statementDigest: "u".repeat(64),
+    receivedAt: Date.now(),
+  });
+  assert.deepEqual(recorded, { ok: true, applied: true });
+
+  const duplicate = await store.recordUsageStatement({
+    remoteTurnId,
+    inputTokens: 100,
+    outputTokens: 50,
+    costUsd: 0.05,
+    endpoint: "https://api.deepseek.com/v1/chat/completions",
+    statementDigest: "u".repeat(64),
+    receivedAt: Date.now(),
+  });
+  assert.deepEqual(duplicate, { ok: true, applied: false }, "a second identical statement is a recorded duplicate");
+
+  const outcome = await store.advanceTeardown(remoteTurnId, 15_000);
+  assert.equal(outcome, "teardown_pending", "usage present ⇒ teardown proceeds with partial settlement");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [remoteTurnId]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "released", "partial usage releases the unused reservation");
+  } finally {
+    await p.end();
+  }
+});
+
+test("advanceTeardown without usage after grace charges the full reservation", { skip }, async () => {
+  const { store, remoteTurnId, receiptToken } = await receiptReady();
+  const outcome = await store.advanceTeardown(remoteTurnId, 0);
+  assert.equal(outcome, "teardown_pending", "grace already expired ⇒ full charge teardown");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM budget_reservations WHERE remote_turn_id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "charged", "missing trusted usage charges the full reservation");
+  } finally {
+    await p.end();
+  }
+});
+
+test("advanceTeardown waits inside grace and is a no-op without a receipt", { skip }, async () => {
+  const { store, remoteTurnId, receiptToken } = await receiptReady();
+  const outcome = await store.advanceTeardown(remoteTurnId, 60_000);
+  assert.equal(outcome, "not_ready", "usage absent and grace unexpired ⇒ wait");
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    await p.query("UPDATE remote_turn SET status='executing' WHERE id=$1", [remoteTurnId]);
+  } finally {
+    await p.end();
+  }
+  const noReceipt = await store.advanceTeardown(remoteTurnId, 0);
+  assert.equal(noReceipt, "no_receipt", "a turn without a receipt is not teardown-ready");
+});
+
+test("getUsageStatement and getExecutionLeaseHash serve the endpoints", { skip }, async () => {
+  const { store, remoteTurnId, receiptToken } = await receiptReady();
+  const lease = await store.getExecutionLeaseHash(remoteTurnId);
+  assert.ok(lease && /^[a-f0-9]{64}$/.test(lease!), "lease hash must be readable post-claim");
+  const none = await store.getUsageStatement(remoteTurnId);
+  assert.equal(none, null);
+  await store.recordUsageStatement({
+    remoteTurnId,
+    inputTokens: 10,
+    outputTokens: 5,
+    costUsd: 0.01,
+    endpoint: "https://api.deepseek.com/v1/chat/completions",
+    statementDigest: "v".repeat(64),
+    receivedAt: Date.now(),
+  });
+  const got = await store.getUsageStatement(remoteTurnId);
+  assert.ok(got);
+  assert.equal(got!.inputTokens, 10);
+  assert.equal(got!.statementDigest, "v".repeat(64));
+});
