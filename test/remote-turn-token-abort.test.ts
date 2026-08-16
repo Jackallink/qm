@@ -369,9 +369,9 @@ async function seedDispatchingTurn(p: import("pg").Pool, turnJtiHash: string, no
     `INSERT INTO remote_turn(
       id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
       binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
-      created_at, updated_at
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
-    [remoteTurnId, coreRunId, `key-claim-${remoteTurnId}`, "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+      pre_claim_expires_at, created_at, updated_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$12,$12)`,
+    [remoteTurnId, coreRunId, `key-claim-${remoteTurnId}`, "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000 + 90, 1_800_000_000],
   );
   return remoteTurnId;
 }
@@ -468,9 +468,9 @@ test("claim on an admitted turn writes next-seq events without colliding with ad
       `INSERT INTO remote_turn(
         id, core_run_id, admission_key, conversation_key, scope_id, actor_id,
         binding_id, binding_version, status, version, turn_jti_hash, attestation_nonce_hash,
-        created_at, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$11)`,
-      [remoteTurnId, coreRunId, "key-flow", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000],
+        pre_claim_expires_at, created_at, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatching',1,$9,$10,$11,$12,$12)`,
+      [remoteTurnId, coreRunId, "key-flow", "conv-1", "scope-1", "actor-1", "binding-1", 1, turnJtiHash, nonceHash, 1_800_000_000 + 90, 1_800_000_000],
     );
     const verified = validPreClaim(remoteTurnId, turnJtiHash, nonceHash);
     const result = await store.claim({
@@ -606,6 +606,37 @@ test("claim refuses an abort-requested turn (abort_before_claim)", { skip }, asy
     });
     const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
     await p.query("UPDATE remote_turn SET abort_requested_at=$2 WHERE id=$1", [remoteTurnId, 1_800_000_000]);
+    const result = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(remoteTurnId, "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(result, { ok: false, reason: "no_lease" });
+    const { rows: statusRows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(statusRows[0].status, "dispatching");
+  } finally {
+    await p.end();
+  }
+});
+
+test("claim refuses a turn whose pre-claim deadline has passed", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store } = await claimStore();
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    await store.claim({
+      remoteTurnId: randomUUID(),
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "e".repeat(64),
+      verifiedPreClaim: validPreClaim(randomUUID(), "f".repeat(64), "e".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 99,
+    });
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    await p.query("UPDATE remote_turn SET pre_claim_expires_at=1 WHERE id=$1", [remoteTurnId]);
     const result = await store.claim({
       remoteTurnId,
       turnJtiHash: "f".repeat(64),

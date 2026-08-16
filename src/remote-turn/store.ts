@@ -446,6 +446,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
              (SELECT max_runtime_ms / 1000 FROM remote_runtime_binding b
                JOIN remote_turn t ON t.binding_id = b.id WHERE t.id = $1)
          WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$6 AND abort_requested_at IS NULL AND version=$7 AND binding_version=$8
+           AND (SELECT extract(epoch from transaction_timestamp())) <= pre_claim_expires_at
          RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
         [input.remoteTurnId, executionLeaseHash, verified.intendedWorkloadIdentity, verified.plannedSandboxId, claimedAt, input.turnJtiHash, input.version, verified.bindingVersion],
       );
