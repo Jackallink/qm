@@ -193,6 +193,7 @@ export interface RemoteTurnStore {
   expireActiveTurn(remoteTurnId: string): Promise<boolean>;
   listCancelRequested(): Promise<CancelRequestedRecord[]>;
   listExpiredDispatching(now: number): Promise<ExpiredDispatchingRecord[]>;
+  renewRemoteLease(remoteTurnId: string): Promise<boolean>;
   listOrphanRuns(): Promise<OrphanRunRecord[]>;
   failOrphanRun(coreRunId: string, leaseToken: string | null): Promise<boolean>;
   reconcile(input: { remoteTurnId: string; outcome: ReconcileOutcome; evidenceDigest: string }): Promise<ReconcileResult>;
@@ -971,6 +972,33 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     });
   }
 
+  async function renewRemoteLease(remoteTurnId: string): Promise<boolean> {
+    return withPgTransaction(await pool.pool(), async (client) => {
+      guardClientErrors(client);
+      const { rows } = await client.query<{ session_id: string; status: string }>(
+        "SELECT qm_session_id AS session_id, status FROM remote_turn WHERE id=$1",
+        [remoteTurnId],
+      );
+      const row = rows[0];
+      if (!row || !row.session_id) return false;
+      const terminal = new Set([
+        "completed",
+        "rejected",
+        "failed_pre_dispatch",
+        "failed",
+        "cancelled",
+      ]);
+      if (terminal.has(row.status)) return false;
+      const holder = leaseHolder(remoteTurnId);
+      const { rowCount } = await client.query(
+        `UPDATE session_leases SET expires_at=$1, acquired_at=$2
+         WHERE session_id=$3 AND holder=$4`,
+        [now() + leaseTtlMs, now(), row.session_id, holder],
+      );
+      return (rowCount ?? 0) > 0;
+    });
+  }
+
   async function disable(input: { bindingId: string; actor: string }): Promise<DisableResult> {
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
@@ -1200,6 +1228,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     expireActiveTurn,
     listCancelRequested,
     listExpiredDispatching,
+    renewRemoteLease,
     listOrphanRuns,
     failOrphanRun,
     reconcile,

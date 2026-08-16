@@ -63,6 +63,9 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     const expiredActive = await opts.store.listExpiredActive();
     const expiredDispatching = await opts.store.listExpiredDispatching(nowMs);
     const cancelRequested = await opts.store.listCancelRequested();
+    for (const turn of [...parked, ...expiredActive, ...cancelRequested]) {
+      await opts.store.renewRemoteLease(turn.remoteTurnId);
+    }
     let reconciled = 0;
     const alerts: string[] = [];
     for (const turn of parked) {

@@ -884,3 +884,46 @@ test("reconciler fails orphaned remote_once runs that never admitted", { skip },
   }
   void attestor;
 });
+
+test("renewRemoteLease keeps a parked turn's remote session lease alive past its TTL", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  await parkTurn(prepared, attestor);
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const holder = `remote_turn:${prepared.remoteTurnId}`;
+    await p.query("UPDATE session_leases SET expires_at=$1 WHERE holder=$2", [Math.floor(Date.now()) - 1000, holder]);
+    const renewed = await prepared.store.renewRemoteLease(prepared.remoteTurnId);
+    assert.equal(renewed, true, "the parked turn's lease must be renewable");
+    const { rows } = await p.query("SELECT expires_at, holder FROM session_leases WHERE holder=$1", [holder]);
+    assert.equal(rows.length, 1);
+    assert.ok(Number(rows[0].expires_at) > Date.now(), "the lease expiry must be extended past now");
+  } finally {
+    await p.end();
+  }
+});
+
+test("acquireLease cannot steal an expired remote_turn: holder lease", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const prepared = await prepareTurn();
+  await parkTurn(prepared, attestor);
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  const sessionId = (await (async () => {
+    const { rows } = await p.query("SELECT qm_session_id FROM remote_turn WHERE id=$1", [prepared.remoteTurnId]);
+    return rows[0].qm_session_id as string;
+  })());
+  try {
+    const holder = `remote_turn:${prepared.remoteTurnId}`;
+    await p.query("UPDATE session_leases SET expires_at=$1 WHERE holder=$2", [Math.floor(Date.now()) - 1000, holder]);
+    const { createPostgresSessionStore } = await import("../src/sessions/postgres-session-store.ts");
+    const sessions = createPostgresSessionStore(URL!);
+    const attempt = await sessions.acquireLease(sessionId, "local-turn");
+    assert.equal(attempt.lease, null, "a remote_turn: holder lease must not be stealable even when expired");
+    const { rows } = await p.query("SELECT holder FROM session_leases WHERE session_id=$1", [sessionId]);
+    assert.equal(rows[0].holder, holder, "the remote holder must still own the lease");
+  } finally {
+    await p.end();
+  }
+});

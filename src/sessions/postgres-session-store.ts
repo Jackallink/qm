@@ -396,6 +396,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
          ON CONFLICT (session_id) DO UPDATE
            SET token = $2, expires_at = $3, holder = $5, acquired_at = $4
            WHERE session_leases.expires_at <= $4
+             AND (session_leases.holder IS NULL OR session_leases.holder NOT LIKE 'remote_turn:%')
          RETURNING token`,
         [sessionId, token, t + leaseTtlMs, t, holder ?? null],
       );
