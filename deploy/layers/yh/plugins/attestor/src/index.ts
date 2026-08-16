@@ -19,6 +19,7 @@ export interface AttestorConfig {
   egressAudience: string;
   policySnapshotHash: string;
   isolationMode: string;
+  executorEnv: Record<string, string>;
   maxPreClaimSandboxes: number;
   preClaimReapGraceMs: number;
   egressGateway: EgressGatewayClient;
@@ -152,7 +153,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           volumeName: vol,
           tokenMountPath: "/run/remote-turn/token",
           capDrop: ["ALL"],
-          env: [],
+          env: Object.entries(config.executorEnv).map(([k, v]) => `${k}=${v}`),
         });
       } catch (error) {
         await config.docker.removeNetwork(net).catch(() => undefined);

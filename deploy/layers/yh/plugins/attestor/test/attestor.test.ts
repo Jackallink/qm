@@ -85,6 +85,7 @@ function config(overrides: Partial<AttestorConfig> = {}): { config: AttestorConf
     policySnapshotHash: HASH,
     egressAudience: "urn:qm:egress:1",
     isolationMode: "container",
+    executorEnv: {},
     maxPreClaimSandboxes: 2,
     preClaimReapGraceMs: 1000,
     egressGateway: egress.client,

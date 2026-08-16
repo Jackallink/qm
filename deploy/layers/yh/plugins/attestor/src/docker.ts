@@ -31,7 +31,7 @@ export interface DockerClient {
 export function createDockerClient(opts: {
   socketPath?: string;
   exec?: (command: string) => Promise<{ code: number; stdout: string; stderr: string }>;
-}): DockerClient {
+} = {}): DockerClient {
   const exec =
     opts.exec ??
     (async (command: string) => {
@@ -45,6 +45,8 @@ export function createDockerClient(opts: {
   };
   return {
     async pullImage(image) {
+      const res = await exec(`docker image inspect ${shellQuote(image)} >/dev/null 2>&1 && echo LOCAL`);
+      if (res.stdout.trim() === "LOCAL") return;
       await run(`docker image pull ${shellQuote(image)}`);
     },
     async createNetwork(name, internal) {
