@@ -826,6 +826,25 @@ export function buildApp(
                 configStore.getSoul(scope) ??
                 configStore.getSoul(`org:${config.orgId}`) ??
                 "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
+              ...(config.egressProxyUrl
+                ? {
+                    egressProxyUrl: config.egressProxyUrl,
+                    egressToken: async (scope: ScopeId) => {
+                      const egressSecret = config.capabilitySecret ?? config.signingSecret;
+                      if (!egressSecret) return undefined;
+                      return mintCapabilityToken(
+                        {
+                          actorId: "system:prime-harness",
+                          scopeId: scope,
+                          aud: EGRESS_PROXY_AUD,
+                          egress: egressClaimAllowingControlPlane({ allowedHosts: [] }, config.apiBaseUrl ?? "", true),
+                          exp: Date.now() + CAPABILITY_TTL_MS,
+                        },
+                        egressSecret,
+                      );
+                    },
+                  }
+                : {}),
               ...(config.primeSandbox
                 ? {
                     sandbox: {

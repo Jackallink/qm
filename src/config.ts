@@ -36,6 +36,7 @@ export interface Config {
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
   deployProvider: "docker" | "aws";
   egressServiceHosts?: string[];
+  egressProxyUrl?: string;
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   modelId?: string;
   primeModel?: string;
@@ -843,6 +844,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     secretsBackend: secretsBackendEnvStrict(env.SECRETS_BACKEND, env.SECRETS_PREFIX ?? ""),
     secretsPrefix: env.SECRETS_PREFIX ?? "",
     ...(publicApiUrl ? { apiBaseUrl: publicApiUrl } : {}),
+    ...(env.SPRITES_EGRESS_PROXY_URL ? { egressProxyUrl: env.SPRITES_EGRESS_PROXY_URL } : {}),
     ...(publicUrl ? { publicUrl } : {}),
     ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
     ...(env.FLY_APP_NAME ? { flyAppName: env.FLY_APP_NAME } : {}),

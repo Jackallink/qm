@@ -60,10 +60,11 @@ export interface PrimeHarnessOptions {
    * Forced egress: route prime's network through QM's egress proxy.
    * Set both to have the child process send proxy-authorization and route
    * HTTP/HTTPS through the proxy (deployment environments; locally the
-   * decision chain is verified via scripts/dev/egress-probe.ts).
+   * decision chain is verified via scripts/dev/egress-probe.ts). The token
+   * may be a per-scope resolver (egress claims bind the scope).
    */
   egressProxyUrl?: string;
-  egressToken?: string;
+  egressToken?: string | ((scope: ScopeId) => string | undefined | Promise<string | undefined>);
   /**
    * Run prime inside a QM sandbox (local docker / sprites / AWS MicroVM)
    * instead of a host child process. When set, prime's RPC process is
@@ -113,8 +114,9 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     return `${opts.sessionDirBase.replace(/\/$/, "")}/${safe}`;
   };
 
-  const clientOptions = (scope: ScopeId): PrimeRpcClientOptions => {
+  const clientOptions = async (scope: ScopeId): Promise<PrimeRpcClientOptions> => {
     const { provider, model } = resolveProviderModel(scope);
+    const egressToken = await (typeof opts.egressToken === "function" ? opts.egressToken(scope) : opts.egressToken);
     return {
       cliPath: opts.sandbox?.cliPath ?? opts.primeBin ?? "prime-agent",
       cwd: opts.cwd ?? sessionDirFor(scope),
@@ -130,7 +132,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
               HTTP_PROXY: opts.egressProxyUrl,
               HTTPS_PROXY: opts.egressProxyUrl,
               NO_PROXY: "",
-              ...(opts.egressToken ? { PRIME_EGRESS_TOKEN: opts.egressToken } : {}),
+              ...(egressToken ? { PRIME_EGRESS_TOKEN: egressToken } : {}),
             }
           : {}),
       },
@@ -161,7 +163,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     let client = clients.get(scope);
     if (!client || client.exited) {
       if (client) clients.delete(scope);
-      const optsForScope = clientOptions(scope);
+      const optsForScope = await clientOptions(scope);
       if (opts.sandbox) {
         const handle = await opts.sandbox.handleFor(scope);
         // One-shot pipe mode (FIFO process sessions are incompatible with
@@ -284,7 +286,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
         const scope = input.scopeLabel;
         const client = await getClient(scope);
         const pendingApprovals: HarnessTurnResult["pendingApprovals"] = [];
-        const extensionBridge = clientOptions(scope).onExtensionUiRequest;
+        const extensionBridge = (await clientOptions(scope)).onExtensionUiRequest;
 
         // Forward streaming deltas / tool progress to QM callbacks.
         const prevOnEvent = client["options"]?.onEvent as ((e: unknown) => void) | undefined;
