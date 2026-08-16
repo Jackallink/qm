@@ -60,7 +60,6 @@ export interface ReceiptClaims {
   outputBytes: number;
   runtimeMs: number;
   receivedAt: number;
-  kid: string;
 }
 
 export interface PreClaimClaims {
@@ -296,16 +295,15 @@ export async function verifyAbortToken(
 
 const RECEIPT_FIELDS = new Set([
   "artifact", "schemaVersion", "remoteTurnId", "bindingVersion", "executionLeaseHash",
-  "inputDigest", "releaseDigest", "status", "reply", "outputBytes", "runtimeMs", "receivedAt", "kid",
+  "inputDigest", "releaseDigest", "status", "reply", "outputBytes", "runtimeMs", "receivedAt",
 ]);
 
 export async function signReceipt(
-  claims: Omit<ReceiptClaims, "kid">,
+  claims: Record<string, unknown>,
   key: { kid: string; privateKeyPem: string },
 ): Promise<string> {
-  const withKid = { ...claims, kid: key.kid };
   const signingKey = await importPKCS8(key.privateKeyPem, "EdDSA");
-  return new CompactSign(new TextEncoder().encode(JSON.stringify(withKid)))
+  return new CompactSign(new TextEncoder().encode(JSON.stringify(claims)))
     .setProtectedHeader({ alg: "EdDSA", kid: key.kid })
     .sign(signingKey);
 }
