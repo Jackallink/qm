@@ -134,6 +134,76 @@ test("binding store disable is versioned and records the actor", { skip }, async
   }
 });
 
+test("binding key rotation bumps the version and replaces only the provided key sets", { skip }, async () => {
+  const store = createRemoteBindingStore(URL!);
+  try {
+    await store.createBinding({ ...input, bindingId: "binding-rotate-1" });
+    const rotatedReceipt: KeySetEntry[] = [
+      {
+        kid: "receipt-2",
+        publicKeyPem: "-----BEGIN PUBLIC KEY-----\nplaceholder-receipt-2\n-----END PUBLIC KEY-----",
+        state: "current",
+        activatedAt: 1,
+        retiresAt: 2000,
+      },
+    ];
+    const rotated = await store.rotateBindingKeys({
+      bindingId: "binding-rotate-1",
+      expectedVersion: 1,
+      receiptKeys: rotatedReceipt,
+      createdBy: "ops-controller",
+    });
+    assert.ok(rotated.ok);
+    assert.equal(rotated.ok && rotated.version, 2);
+
+    const got = await store.getBinding("binding-rotate-1");
+    assert.ok(got);
+    assert.equal(got.version, 2);
+    assert.equal(got.receiptKeys.length, 1);
+    assert.equal(got.receiptKeys[0]!.kid, "receipt-2", "the provided key set must be replaced");
+    assert.equal(got.coreVerificationKeys[0]!.kid, "core-1", "unprovided key sets must be unchanged");
+    assert.equal(got.attestorKeys[0]!.kid, "attestor-1");
+    assert.equal(got.meteringKeys[0]!.kid, "metering-1");
+  } finally {
+    await store.close();
+  }
+});
+
+test("binding key rotation refuses a stale expectedVersion and a disabled binding", { skip }, async () => {
+  const store = createRemoteBindingStore(URL!);
+  try {
+    await store.createBinding({ ...input, bindingId: "binding-rotate-2" });
+    const conflict = await store.rotateBindingKeys({
+      bindingId: "binding-rotate-2",
+      expectedVersion: 99,
+      attestorKeys,
+      createdBy: "ops-controller",
+    });
+    assert.ok(!conflict.ok && conflict.reason === "version_conflict");
+
+    const missing = await store.rotateBindingKeys({
+      bindingId: "binding-never-existed",
+      expectedVersion: 1,
+      attestorKeys,
+      createdBy: "ops-controller",
+    });
+    assert.ok(!missing.ok && missing.reason === "not_found");
+
+    await store.setEnabled("binding-rotate-2", false, "ops-controller");
+    const disabled = await store.rotateBindingKeys({
+      bindingId: "binding-rotate-2",
+      expectedVersion: 2,
+      attestorKeys,
+      createdBy: "ops-controller",
+    });
+    assert.ok(!disabled.ok && disabled.reason === "disabled", "rotation on a disabled binding must be refused");
+    const got = await store.getBinding("binding-rotate-2");
+    assert.equal(got?.version, 2, "a refused rotation must not bump the version");
+  } finally {
+    await store.close();
+  }
+});
+
 test("binding store concurrent setEnabled settles by version CAS (one wins, losers conflict)", { skip }, async () => {
   const store = createRemoteBindingStore(URL!);
   try {

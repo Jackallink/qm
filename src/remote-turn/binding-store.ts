@@ -137,9 +137,24 @@ function rowToBinding(row: Record<string, unknown>): RemoteRuntimeBinding {
   };
 }
 
+export interface RotateBindingKeysInput {
+  bindingId: string;
+  expectedVersion: number;
+  coreVerificationKeys?: KeySetEntry[];
+  attestorKeys?: KeySetEntry[];
+  receiptKeys?: KeySetEntry[];
+  meteringKeys?: KeySetEntry[];
+  createdBy: string;
+}
+
+export type RotateBindingKeysResult =
+  | { ok: true; version: number }
+  | { ok: false; reason: "not_found" | "version_conflict" | "disabled" };
+
 export interface RemoteBindingStore {
   createBinding(input: CreateBindingInput): Promise<RemoteRuntimeBinding>;
   getBinding(bindingId: string): Promise<RemoteRuntimeBinding | null>;
+  rotateBindingKeys(input: RotateBindingKeysInput): Promise<RotateBindingKeysResult>;
   setEnabled(bindingId: string, enabled: boolean, actor: string): Promise<{ version: number }>;
   setEnabledOn(
     client: import("pg").PoolClient,
@@ -234,6 +249,27 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
     return { version: Number(rows[0].version) };
   }
 
+  async function rotateBindingKeys(input: RotateBindingKeysInput): Promise<RotateBindingKeysResult> {
+    const rows = await db.q("SELECT * FROM remote_runtime_binding WHERE id=$1", [input.bindingId]);
+    if (!rows[0]) return { ok: false as const, reason: "not_found" as const };
+    const current = rowToBinding(rows[0]);
+    if (!current.enabled) return { ok: false as const, reason: "disabled" as const };
+    const merged = JSON.stringify({
+      core: input.coreVerificationKeys ?? current.coreVerificationKeys,
+      attestor: input.attestorKeys ?? current.attestorKeys,
+      receipt: input.receiptKeys ?? current.receiptKeys,
+      metering: input.meteringKeys ?? current.meteringKeys,
+    });
+    const { rows: updated } = await db.query(
+      `UPDATE remote_runtime_binding SET version=version+1, key_sets=$2
+       WHERE id=$1 AND version=$3 AND enabled
+       RETURNING version`,
+      [input.bindingId, merged, input.expectedVersion],
+    );
+    if (!updated[0]) return { ok: false as const, reason: "version_conflict" as const };
+    return { ok: true as const, version: Number(updated[0].version) };
+  }
+
   async function listBindings(): Promise<RemoteRuntimeBinding[]> {
     const rows = await db.q("SELECT * FROM remote_runtime_binding ORDER BY created_at ASC");
     return rows.map(rowToBinding);
@@ -243,5 +279,5 @@ export function createRemoteBindingStore(connectionString: string): RemoteBindin
     await db.close();
   }
 
-  return { createBinding, getBinding, setEnabled, setEnabledOn, listBindings, close };
+  return { createBinding, getBinding, rotateBindingKeys, setEnabled, setEnabledOn, listBindings, close };
 }
