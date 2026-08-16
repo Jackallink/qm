@@ -133,6 +133,7 @@ export interface ServerDeps {
     }): Promise<{ ok: true } | { ok: false; reason: string }>;
   };
   remoteTurnUsageGraceMs?: number;
+  remoteTurnG0Verifier?: import("../remote-turn/g0-verifier.ts").G0Verifier;
   deployAppsDomain?: string;
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;

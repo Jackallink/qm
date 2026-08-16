@@ -245,3 +245,63 @@ test("claim endpoint: valid turn + pre-claim attestation yields a claimed turn a
     await bindings.close();
   }
 });
+
+test("turn-flow entry admits a G0-context request via x-governance-context", { skip }, async () => {
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { createG0Verifier, mintGovernanceContext, exportG0PublicKey } = await import("../src/remote-turn/g0-verifier.ts");
+  const govPair = generateKeyPairSync("ed25519");
+  const govPem = await exportG0PublicKey(govPair.publicKey);
+  const bindings = createRemoteBindingStore(URL!);
+  const binding = await bindings.createBinding(bindingInput());
+  const store = createRemoteTurnStore(URL!, { abortKey: coreKeys });
+  const g0Verifier = createG0Verifier({
+    publicKeyPems: { "gov-k1": govPem },
+  });
+  const deps = {
+    remoteTurnStore: store,
+    remoteTurnBindingStore: bindings,
+    remoteTurnG0Verifier: g0Verifier,
+  };
+  const app = {} as never;
+  const server = createInsecureTestServer(app, deps as never);
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const g0jws = await mintGovernanceContext(
+      {
+        actorId: "actor-1",
+        scopeId: binding.allowedScopeId,
+        conversationKey: `conv-${randomUUID()}`,
+        governanceDecisionId: `decision-${randomUUID()}`,
+        governanceAuthorizationDigest: "g".repeat(64),
+        traceId: `trace-${randomUUID()}`,
+        exp: nowSec + 300,
+        nbf: nowSec - 10,
+        aud: "urn:qm:core",
+      },
+      govPair.privateKey,
+      "gov-k1",
+    );
+    const res = await fetch(`${base}/v1/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-governance-context": g0jws },
+      body: JSON.stringify({ text: "hello remote", actor: { p: "actor-1" }, conversation: { kind: "dm", threadRef: "t" } }),
+    });
+    assert.equal(res.status, 202);
+    const parsed = (await res.json()) as { status: string; remoteTurnId?: string };
+    assert.equal(parsed.status, "queued");
+    assert.ok(parsed.remoteTurnId);
+
+    const replayed = await fetch(`${base}/v1/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-governance-context": g0jws },
+      body: JSON.stringify({ text: "hello again", actor: { p: "actor-1" }, conversation: { kind: "dm", threadRef: "t" } }),
+    });
+    assert.equal(replayed.status, 403);
+    const replayBody = (await replayed.json()) as { message?: string };
+    assert.equal(replayBody.message, "governance_replay");
+  } finally {
+    server.close();
+  }
+});

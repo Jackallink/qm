@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { TurnOrigin, TurnRequest } from "../../types.ts";
 import { resolveTurnOrigin } from "../../core/turn-origin.ts";
 import { sendJson } from "../http.ts";
@@ -28,11 +29,65 @@ function publicTurnOrigin(body: TurnRequest): { origin?: TurnOrigin; error?: str
   return { origin: resolveTurnOrigin({ ...body, ...(typed ? { origin: typed } : { origin: undefined }) }) };
 }
 
+async function remoteTurnAdmission(ctx: ApiCtx, body: TurnRequest): Promise<boolean> {
+  const { res, deps } = ctx;
+  const header = ctx.req.headers["x-governance-context"];
+  const jws = Array.isArray(header) ? header[0] : header;
+  if (!jws) return false;
+  if (!deps.remoteTurnG0Verifier || !deps.remoteTurnStore || !deps.remoteTurnBindingStore) {
+    sendJson(res, 503, { error: "service_unavailable", message: "remote turn control plane is not configured" });
+    return true;
+  }
+  const claims = await deps.remoteTurnG0Verifier.verifyContext(jws, { audience: "urn:qm:core", nowMs: Date.now() });
+  if (!claims) {
+    sendJson(res, 403, { error: "refused", message: "governance context verification failed" });
+    return true;
+  }
+  const consumed = await deps.remoteTurnStore.consumeGovernanceDecision(claims.governanceDecisionId);
+  if (!consumed) {
+    sendJson(res, 403, { error: "refused", message: "governance_replay" });
+    return true;
+  }
+  const bindings = await deps.remoteTurnBindingStore.listBindings();
+  const binding = bindings.find((b) => b.enabled && b.allowedScopeId === claims.scopeId);
+  if (!binding) {
+    sendJson(res, 403, { error: "refused", message: "runtime_not_enabled" });
+    return true;
+  }
+  const result = await deps.remoteTurnStore.admit({
+    bindingId: binding.bindingId,
+    g0: {
+      actorId: claims.actorId,
+      scopeId: claims.scopeId,
+      conversationKey: claims.conversationKey,
+      governanceDecisionId: claims.governanceDecisionId,
+      governanceAuthorizationDigest: claims.governanceAuthorizationDigest,
+      traceId: claims.traceId,
+    },
+    coreRunId: randomUUID(),
+    conversationKey: claims.conversationKey,
+    scopeId: claims.scopeId,
+    actorId: claims.actorId,
+    text: body.text,
+    history: [],
+    threadRef: `web:${claims.actorId}:remote-${claims.governanceDecisionId}`,
+    surface: "web",
+    deliveryTarget: `web:${claims.actorId}:remote-${claims.governanceDecisionId}`,
+  });
+  if (result.status === "admitted") {
+    sendJson(res, 202, { status: "queued", sessionId: undefined, remoteTurnId: result.remoteTurnId });
+    return true;
+  }
+  sendJson(res, 403, { error: "refused", message: result.reason });
+  return true;
+}
+
 async function postTurn(ctx: ApiCtx): Promise<void> {
   const { res, app, url, body } = ctx;
   if (!isTurnRequest(body)) {
     return sendJson(res, 400, { error: "bad_request", message: "expected a TurnRequest" });
   }
+  if (await remoteTurnAdmission(ctx, body)) return;
   const wantAsync = url.searchParams.get("async") === "1" || body.async === true;
   const { ownerKeychainUnion: _ownerKeychainUnion, spawned: _spawned, ...safeBody } = body;
   const resolvedOrigin = publicTurnOrigin(safeBody);

@@ -200,6 +200,7 @@ export interface UsageStatementRecord {
 
 export interface RemoteTurnStore {
   admit(input: AdmitInput): Promise<AdmitResult>;
+  consumeGovernanceDecision(decisionId: string): Promise<boolean>;
   getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null>;
   recordUsageStatement(input: UsageStatementRecord): Promise<{ ok: true; applied: boolean } | { ok: false; reason: "unknown_turn" }>;
   advanceTeardown(remoteTurnId: string, graceMs: number): Promise<"teardown_pending" | "parked" | "not_ready" | "no_receipt">;
@@ -811,6 +812,14 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       [remoteTurnId],
     );
     return rows[0] ?? null;
+  }
+
+  async function consumeGovernanceDecision(decisionId: string): Promise<boolean> {
+    const { rowCount } = await pool.query(
+      "INSERT INTO remote_turn_governance_consumption(decision_id, remote_turn_id, consumed_at) VALUES($1,$2,$3) ON CONFLICT (decision_id) DO NOTHING",
+      [decisionId, "pending", now()],
+    );
+    return rowCount === 1;
   }
 
   async function getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null> {
@@ -1426,6 +1435,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
   return {
     admit,
+    consumeGovernanceDecision,
     getPreClaimExpectation,
     recordUsageStatement,
     advanceTeardown,

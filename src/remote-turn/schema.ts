@@ -136,6 +136,12 @@ export const REMOTE_TURN_RUN_DDL = [
   `ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_attempts INT NOT NULL DEFAULT 0`,
 ] as const;
 
+export const REMOTE_TURN_GOVERNANCE_CONSUMPTION_DDL = `CREATE TABLE IF NOT EXISTS remote_turn_governance_consumption(
+  decision_id TEXT PRIMARY KEY,
+  remote_turn_id TEXT NOT NULL,
+  consumed_at BIGINT NOT NULL
+)`;
+
 export const REMOTE_TURN_USAGE_STATEMENTS_DDL = `CREATE TABLE IF NOT EXISTS remote_turn_usage_statements(
   remote_turn_id TEXT PRIMARY KEY,
   input_tokens INT NOT NULL,
@@ -167,5 +173,6 @@ export const REMOTE_TURN_DDL_ALL = [
   REMOTE_TURN_EVENTS_DDL,
   REMOTE_TURN_EVENTS_SCOPE_ALTER_DDL,
   REMOTE_TURN_AUDIT_READS_DDL,
+  REMOTE_TURN_GOVERNANCE_CONSUMPTION_DDL,
   REMOTE_TURN_USAGE_STATEMENTS_DDL,
 ] as const;
