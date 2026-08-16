@@ -82,6 +82,7 @@ function config(overrides: Partial<AttestorConfig> = {}): { config: AttestorConf
     releaseImage: "ghcr.io/yh/executor:v1",
     networkPolicyId: "net-pol-1",
     endpointAllowlist: ["https://api.deepseek.com"],
+    policySnapshotHash: HASH,
     egressAudience: "urn:qm:egress:1",
     isolationMode: "container",
     maxPreClaimSandboxes: 2,

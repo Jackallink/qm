@@ -222,8 +222,86 @@ async function receipt(ctx: ApiCtx): Promise<void> {
   sendJson(ctx.res, 200, { status: "receipt_received", teardown: outcome });
 }
 
+async function startProof(ctx: ApiCtx): Promise<void> {
+  const transport = await verifyTransport(ctx);
+  if (!transport.ok) {
+    sendTransportFailure(ctx, transport);
+    return;
+  }
+  const deps = ctx.deps;
+  if (!deps.remoteTurnStore) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const body = bodyOf(ctx);
+  const remoteTurnId = str(body.remoteTurnId);
+  const startProofJws = str(body.startProof);
+  if (!remoteTurnId || !startProofJws) {
+    badRequest(ctx, "remoteTurnId and startProof are required");
+    return;
+  }
+  const result = await deps.remoteTurnStore.startExecution({ remoteTurnId, startProofJws });
+  if (!result.ok) {
+    sendJson(ctx.res, 409, { error: "start_refused", reason: result.reason });
+    return;
+  }
+  sendJson(ctx.res, 200, { status: "executing" });
+}
+
+async function terminationProof(ctx: ApiCtx): Promise<void> {
+  const transport = await verifyTransport(ctx);
+  if (!transport.ok) {
+    sendTransportFailure(ctx, transport);
+    return;
+  }
+  const deps = ctx.deps;
+  if (!deps.remoteTurnStore) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const body = bodyOf(ctx);
+  const remoteTurnId = str(body.remoteTurnId);
+  const proofJws = str(body.terminationProof);
+  if (!remoteTurnId || !proofJws) {
+    badRequest(ctx, "remoteTurnId and terminationProof are required");
+    return;
+  }
+  const leaseHash = await deps.remoteTurnStore.getExecutionLeaseHash(remoteTurnId);
+  if (!leaseHash) {
+    notFound(ctx, "turn has no execution lease");
+    return;
+  }
+  if (!deps.remoteTurnAttestationVerifier) {
+    serviceUnavailable(ctx, "remote turn control plane is not configured");
+    return;
+  }
+  const verified = await deps.remoteTurnAttestationVerifier.verifyTerminationProof(proofJws, {
+    attestationKeySet: transport.binding.attestorKeys,
+    expected: { remoteTurnId, executionLeaseHash: leaseHash },
+  });
+  if (!verified) {
+    unauthorized(ctx, "termination proof verification failed");
+    return;
+  }
+  const result = await deps.remoteTurnStore.completeTeardown({
+    remoteTurnId,
+    evidence: {
+      sandboxDeleted: verified.exitResult === "deleted",
+      egressRevoked: verified.egressRevocationAck === true,
+      proofDigest: sha256Hex(proofJws),
+    },
+  });
+  if (result !== "completed") {
+    sendJson(ctx.res, 409, { error: "teardown_refused", reason: result });
+    return;
+  }
+  sendJson(ctx.res, 200, { status: "completed" });
+}
+
 export const remoteTurnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/remote-turn/claim", auth: "public", handle: claim },
   { method: "POST", path: "/v1/remote-turn/receipt", auth: "public", handle: receipt },
   { method: "POST", path: "/v1/remote-turn/usage", auth: "public", handle: usage },
+  { method: "POST", path: "/v1/remote-turn/start-proof", auth: "public", handle: startProof },
+  { method: "POST", path: "/v1/remote-turn/termination-proof", auth: "public", handle: terminationProof },
 ];

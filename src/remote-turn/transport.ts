@@ -41,6 +41,8 @@ export function createRemoteTurnTransport(opts: {
         releaseDigest: payload.releaseDigest,
         turnToken: payload.turnToken,
         attestationNonce: payload.attestationNonce,
+        text: payload.text,
+        history: payload.history,
       });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);

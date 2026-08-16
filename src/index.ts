@@ -32,6 +32,7 @@ const server = createServer(built.app, {
   ...(built.remoteTurnBindingStore ? { remoteTurnBindingStore: built.remoteTurnBindingStore } : {}),
   ...(built.remoteTurnTransportAuth ? { remoteTurnTransportAuth: built.remoteTurnTransportAuth } : {}),
   ...(built.remoteTurnAttestationVerifier ? { remoteTurnAttestationVerifier: built.remoteTurnAttestationVerifier } : {}),
+  ...(built.remoteTurnG0Verifier ? { remoteTurnG0Verifier: built.remoteTurnG0Verifier } : {}),
   ...(built.remoteTurnTurnVerifier ? { remoteTurnTurnVerifier: built.remoteTurnTurnVerifier } : {}),
   ...(built.remoteTurnAttestorClient ? { remoteTurnAttestorClient: built.remoteTurnAttestorClient } : {}),
   baseModelDefault: defaultModelForHarness(

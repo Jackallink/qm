@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createSweeper, type Sweeper } from "../util/sweeper.ts";
 import type { RemoteBindingStore } from "./binding-store.ts";
 import type { RemoteTurnTransport } from "./transport.ts";
@@ -70,6 +71,7 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     const expiredDispatching = await opts.store.listExpiredDispatching(nowMs);
     const cancelRequested = await opts.store.listCancelRequested();
     const dispatching = await opts.store.listDispatching();
+    const admitted = await opts.store.listAdmitted();
     for (const turn of [...parked, ...expiredActive, ...cancelRequested]) {
       await opts.store.renewRemoteLease(turn.remoteTurnId);
     }
@@ -99,6 +101,20 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
     for (const turn of expiredActive) {
       const expired = await opts.store.expireActiveTurn(turn.remoteTurnId);
       if (expired) reconciled += 1;
+    }
+    for (const turn of admitted) {
+      if (!opts.transport || !opts.bindings) break;
+      const binding = await opts.bindings.getBinding(turn.bindingId);
+      const baseUrl = binding ? opts.transport.resolveService(binding.transportServiceId) : null;
+      if (!baseUrl) continue;
+      const jti = randomUUID();
+      const nonce = randomUUID();
+      const dispatched = await opts.store.prepareDispatch({
+        remoteTurnId: turn.remoteTurnId,
+        leaseToken: turn.runLeaseToken,
+        envelope: { turnJti: jti, attestationNonce: nonce },
+      });
+      if (dispatched.ok) reconciled += 1;
     }
     for (const turn of dispatching) {
       if (opts.transport && opts.bindings) {

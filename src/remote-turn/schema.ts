@@ -89,6 +89,10 @@ export const REMOTE_TURN_PRECLAIM_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUM
 
 export const REMOTE_TURN_TOKEN_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS turn_token TEXT`;
 
+export const REMOTE_TURN_HISTORY_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS history JSONB`;
+
+export const REMOTE_TURN_NONCE_ALTER_DDL = `ALTER TABLE remote_turn ADD COLUMN IF NOT EXISTS attestation_nonce TEXT`;
+
 export const REMOTE_TURN_CORE_RUN_FK_DDL = `DO $fk$ BEGIN IF to_regclass('runs') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_core_run_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_core_run_fk FOREIGN KEY (core_run_id) REFERENCES runs(id) ON DELETE RESTRICT; END IF; END $fk$`;
 
 export const REMOTE_TURN_SESSION_FK_DDL = `DO $fk$ BEGIN IF to_regclass('sessions') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'remote_turn_session_fk') THEN ALTER TABLE remote_turn ADD CONSTRAINT remote_turn_session_fk FOREIGN KEY (qm_session_id) REFERENCES sessions(id) ON DELETE RESTRICT; END IF; END $fk$`;
@@ -169,6 +173,8 @@ export const REMOTE_TURN_DDL_ALL = [
   REMOTE_TURN_DDL,
   REMOTE_TURN_PRECLAIM_ALTER_DDL,
   REMOTE_TURN_TOKEN_ALTER_DDL,
+  REMOTE_TURN_HISTORY_ALTER_DDL,
+  REMOTE_TURN_NONCE_ALTER_DDL,
   REMOTE_TURN_RECEIPT_SNAPSHOT_ALTER_DDL,
   REMOTE_TURN_CORE_RUN_FK_DDL,
   REMOTE_TURN_SESSION_FK_DDL,

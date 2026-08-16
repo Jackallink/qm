@@ -203,6 +203,8 @@ export interface DispatchPayload {
   attestationNonce: string;
   releaseDigest: string;
   turnToken: string;
+  text: string;
+  history: Array<{ role: string; text: string }>;
 }
 
 export interface UsageStatementRecord {
@@ -220,6 +222,7 @@ export interface RemoteTurnStore {
   consumeGovernanceDecision(decisionId: string): Promise<boolean>;
   getDispatchPayload(remoteTurnId: string): Promise<DispatchPayload | null>;
   listDispatching(): Promise<Array<{ remoteTurnId: string; bindingId: string }>>;
+  listAdmitted(): Promise<Array<{ remoteTurnId: string; bindingId: string; coreRunId: string; runLeaseToken: string }>>;
   getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null>;
   recordUsageStatement(input: UsageStatementRecord): Promise<{ ok: true; applied: boolean } | { ok: false; reason: "unknown_turn" }>;
   advanceTeardown(remoteTurnId: string, graceMs: number): Promise<"teardown_pending" | "parked" | "not_ready" | "no_receipt">;
@@ -440,11 +443,11 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             id, core_run_id, admission_key, conversation_key, scope_id, actor_id, qm_session_id,
             governance_authorization_digest, governance_decision_id, binding_id, binding_version,
             input_digest, envelope_digest, history_digest, release_digest, receipt_key_snapshot, status, version,
-            policy_digest, endpoint_allowlist, egress_audience, pre_claim_expiry,
+            policy_digest, endpoint_allowlist, egress_audience, pre_claim_expiry, history,
             pre_admission_expires_at, correlation_id, created_at, updated_at
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,1,
-            $18,$19,$20,$21,
-            (SELECT extract(epoch from transaction_timestamp())) + $22, $23, $24, $24)`,
+            $18,$19,$20,$21,$22,
+            (SELECT extract(epoch from transaction_timestamp())) + $23, $24, $25, $25)`,
           [
             remoteTurnId, input.coreRunId, admissionKey, input.conversationKey, input.scopeId, input.actorId,
             session.id, input.g0.governanceAuthorizationDigest, input.g0.governanceDecisionId,
@@ -452,6 +455,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             binding!.release_digest as string, JSON.stringify(receiptKeySnapshot), "created",
             computePolicyDigest(binding!), JSON.stringify(endpointAllowlistOf(binding!)), binding!.egress_audience as string,
             Math.floor(createdAt / 1000) + Number(binding!.token_ttl_ms) / 1000,
+            JSON.stringify(input.history),
             ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
           ],
         );
@@ -648,7 +652,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         const turnToken = await mintDispatchTurnToken(client, input.remoteTurnId, input.envelope, turn);
         const { rows: updated } = await client.query<Record<string, unknown>>(
           `UPDATE remote_turn
-           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$8, turn_token=$9,
+           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$8, turn_token=$9, attestation_nonce=$10,
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
                pre_claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) + $6,
                version=version+1, updated_at=$5
@@ -661,6 +665,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             Number(turn.version),
             workloadIdentity,
             turnToken,
+            input.envelope.attestationNonce,
           ],
         );
         const row = updated[0];
@@ -873,6 +878,18 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     return rows[0] ?? null;
   }
 
+  async function listAdmitted(): Promise<Array<{ remoteTurnId: string; bindingId: string; coreRunId: string; runLeaseToken: string }>> {
+    const { rows } = await pool.query(
+      "SELECT rt.id, rt.binding_id, rt.core_run_id, r.lease_token FROM remote_turn rt JOIN runs r ON r.id = rt.core_run_id WHERE rt.status='admitted'",
+    );
+    return rows.map((row) => ({
+      remoteTurnId: row.id as string,
+      bindingId: row.binding_id as string,
+      coreRunId: row.core_run_id as string,
+      runLeaseToken: (row.lease_token as string | null) ?? "",
+    }));
+  }
+
   async function listDispatching(): Promise<Array<{ remoteTurnId: string; bindingId: string }>> {
     const { rows } = await pool.query(
       "SELECT id, binding_id FROM remote_turn WHERE status='dispatching' AND pre_claim_expires_at IS NOT NULL AND (SELECT extract(epoch from now())) < pre_claim_expires_at",
@@ -882,9 +899,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
   async function getDispatchPayload(remoteTurnId: string): Promise<DispatchPayload | null> {
     const { rows } = await pool.query(
-      `SELECT id, binding_id, binding_version, conversation_key, scope_id, qm_session_id, core_run_id,
-              input_digest, history_digest, envelope_digest, turn_jti_hash, attestation_nonce_hash, release_digest, turn_token, status
-       FROM remote_turn WHERE id=$1`,
+      `SELECT rt.id, rt.binding_id, rt.binding_version, rt.conversation_key, rt.scope_id, rt.qm_session_id, rt.core_run_id,
+              rt.input_digest, rt.history_digest, rt.envelope_digest, rt.turn_jti_hash, rt.attestation_nonce_hash, rt.attestation_nonce, rt.release_digest, rt.turn_token, rt.history, rt.status,
+              r.request
+       FROM remote_turn rt JOIN runs r ON r.id = rt.core_run_id WHERE rt.id=$1`,
       [remoteTurnId],
     );
     const row = rows[0];
@@ -901,9 +919,22 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       historyDigest: row.history_digest as string,
       envelopeDigest: row.envelope_digest as string,
       turnJti: row.turn_jti_hash as string,
-      attestationNonce: row.attestation_nonce_hash as string,
+      attestationNonce: (row.attestation_nonce as string) ?? (row.attestation_nonce_hash as string),
       releaseDigest: row.release_digest as string,
       turnToken: row.turn_token as string,
+      text: (() => {
+        try {
+          const req = JSON.parse(row.request as string) as { text?: string };
+          return req.text ?? "";
+        } catch {
+          return "";
+        }
+      })(),
+      history: (() => {
+        const raw = row.history;
+        if (Array.isArray(raw)) return raw as Array<{ role: string; text: string }>;
+        return [];
+      })(),
     };
   }
 
@@ -1531,6 +1562,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     consumeGovernanceDecision,
     getDispatchPayload,
     listDispatching,
+    listAdmitted,
     getPreClaimExpectation,
     recordUsageStatement,
     advanceTeardown,

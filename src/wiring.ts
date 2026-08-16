@@ -189,6 +189,7 @@ import { createAttestationVerifier } from "./remote-turn/attestation.ts";
 import { createTransportAuth, type TransportAuthVerifier } from "./remote-turn/transport-auth.ts";
 import { createRemoteTurnKeyProvider } from "./remote-turn/tokens.ts";
 import { createRemoteTurnTransport } from "./remote-turn/transport.ts";
+import { createG0Verifier } from "./remote-turn/g0-verifier.ts";
 import { createRemoteTurnReconciler, type RemoteTurnReconciler } from "./remote-turn/reconciler.ts";
 import { verifyTurnToken } from "./remote-turn/tokens.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
@@ -323,6 +324,7 @@ export interface BuiltApp {
   remoteTurnBindingStore?: RemoteBindingStore;
   remoteTurnTransportAuth?: TransportAuthVerifier;
   remoteTurnAttestationVerifier?: ReturnType<typeof createAttestationVerifier>;
+  remoteTurnG0Verifier?: ReturnType<typeof createG0Verifier>;
   remoteTurnTurnVerifier?: { verifyTurnToken: typeof verifyTurnToken };
   remoteTurnAttestorClient?: {
     pushLease(input: {
@@ -843,6 +845,9 @@ export function buildApp(
     ? createTransportAuth({ keys: config.remoteTurnTransportAuthKeys })
     : undefined;
   const remoteTurnAttestationVerifier = createAttestationVerifier();
+  const remoteTurnG0Verifier = config.remoteTurnGovernanceKeys
+    ? createG0Verifier({ publicKeyPems: config.remoteTurnGovernanceKeys })
+    : undefined;
   const remoteTurnTransport = config.remoteTurnTransports
     ? createRemoteTurnTransport({ transports: config.remoteTurnTransports })
     : undefined;
@@ -1556,6 +1561,7 @@ export function buildApp(
     ...(remoteTurnBindingStore ? { remoteTurnBindingStore } : {}),
     ...(remoteTurnTransportAuth ? { remoteTurnTransportAuth } : {}),
     ...(remoteTurnStore ? { remoteTurnAttestationVerifier } : {}),
+    ...(remoteTurnG0Verifier ? { remoteTurnG0Verifier } : {}),
     ...(remoteTurnStore ? { remoteTurnTurnVerifier: { verifyTurnToken } } : {}),
     ...(remoteTurnAttestorClient ? { remoteTurnAttestorClient } : {}),
     signals: runSignals,

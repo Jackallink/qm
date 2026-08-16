@@ -83,6 +83,7 @@ export interface Config {
   remoteTurnTransportAuthKeys?: Record<string, string>;
   remoteTurnAttestorUrl?: string;
   remoteTurnTransports?: Record<string, string>;
+  remoteTurnGovernanceKeys?: Record<string, string>;
   capabilitySecret?: string;
   portalIdentitySecret?: string;
   requireSignedPortalIdentity?: boolean;
@@ -817,6 +818,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.REMOTE_TURN_ATTESTOR_URL ? { remoteTurnAttestorUrl: env.REMOTE_TURN_ATTESTOR_URL } : {}),
     ...(env.REMOTE_TURN_TRANSPORTS
       ? { remoteTurnTransports: JSON.parse(env.REMOTE_TURN_TRANSPORTS) as Record<string, string> }
+      : {}),
+    ...(env.REMOTE_TURN_GOVERNANCE_KEYS
+      ? { remoteTurnGovernanceKeys: JSON.parse(env.REMOTE_TURN_GOVERNANCE_KEYS) as Record<string, string> }
       : {}),
     ...((env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET)
       ? { capabilitySecret: env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET }

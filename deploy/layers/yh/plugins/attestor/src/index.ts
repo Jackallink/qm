@@ -17,6 +17,7 @@ export interface AttestorConfig {
   networkPolicyId: string;
   endpointAllowlist: string[];
   egressAudience: string;
+  policySnapshotHash: string;
   isolationMode: string;
   maxPreClaimSandboxes: number;
   preClaimReapGraceMs: number;
@@ -25,6 +26,7 @@ export interface AttestorConfig {
   store: AttestorStore;
   now?: () => number;
   bindingVersion: number;
+  workloadIdentityFor?: (remoteTurnId: string) => string;
 }
 
 export interface EgressGatewayClient {
@@ -117,6 +119,7 @@ export interface AttestorHandlers {
 export function createAttestor(config: AttestorConfig): AttestorHandlers {
   const now = config.now ?? Date.now;
   const grace = config.preClaimReapGraceMs ?? 30_000;
+  const workloadIdentityFor = config.workloadIdentityFor ?? ((remoteTurnId: string) => `wl-${remoteTurnId}`);
 
   return {
     async requestPreClaim(input) {
@@ -182,11 +185,11 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           bindingVersion: config.bindingVersion,
           turnJtiHash: record.turnJtiHash,
           attestationNonceHash: nonceHash,
-          intendedWorkloadIdentity: turn.scopeId,
+          intendedWorkloadIdentity: workloadIdentityFor(input.remoteTurnId),
           plannedSandboxId: sandboxId,
           releaseDigest: config.releaseDigest,
           isolationMode: config.isolationMode,
-          policyDigest: sha256Hex([config.networkPolicyId, JSON.stringify(config.endpointAllowlist), config.egressAudience].join("|")),
+          policyDigest: sha256Hex([config.policySnapshotHash, config.networkPolicyId, JSON.stringify(config.endpointAllowlist), config.egressAudience].join("|")),
           networkPolicyId: config.networkPolicyId,
           endpointAllowlist: config.endpointAllowlist,
           egressAudience: config.egressAudience,
@@ -231,7 +234,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           turnJtiHash: record.turnJtiHash,
           executionLeaseHash: leaseHash,
           sandboxId: record.sandboxId,
-          workloadIdentity: input.remoteTurnId,
+          workloadIdentity: workloadIdentityFor(input.remoteTurnId),
           releaseDigest: config.releaseDigest,
           networkPolicyId: config.networkPolicyId,
           egressTokenId: minted.tokenId,
