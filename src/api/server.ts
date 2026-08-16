@@ -422,14 +422,18 @@ function buildFastify(wiring: Wiring, server: Server): { fastify: FastifyInstanc
 
   for (const route of apiRoutes) {
     if (!("path" in route)) continue;
-    fastify.route({
-      method: route.method as HTTPMethods,
-      url: route.path,
-      config: { route },
-      schema: { params: paramsSchema(route.path) },
-      preValidation: gateHook,
-      handler,
-    });
+    try {
+      fastify.route({
+        method: route.method as HTTPMethods,
+        url: route.path,
+        config: { route },
+        schema: { params: paramsSchema(route.path) },
+        preValidation: gateHook,
+        handler,
+      });
+    } catch (error) {
+      console.error(`[server] fastify route registration failed: ${route.method} ${route.path}: ${(error as Error).message.slice(0, 120)}`);
+    }
   }
 
   fastify.setNotFoundHandler(fallback);
