@@ -13,7 +13,10 @@ services:
       retries: 10
 
   egress-gw:
-    build: ./plugins/egress-gw
+    container_name: egress-gw
+    build:
+      context: ./plugins
+      dockerfile: egress-gw/Dockerfile
     environment:
       METERING_KEY_KID: ${METERING_KEY_KID}
       METERING_KEY: ${METERING_KEY}
@@ -21,7 +24,9 @@ services:
       PORT: "48080"
 
   attestor:
-    build: ./plugins/attestor
+    build:
+      context: ./plugins
+      dockerfile: attestor/Dockerfile
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -41,7 +46,9 @@ services:
       PORT: "8082"
 
   remote-runtime:
-    build: ./plugins/remote-runtime
+    build:
+      context: ./plugins
+      dockerfile: remote-runtime/Dockerfile
     environment:
       BINDING_ID: ${BINDING_ID}
       RUNTIME_AUDIENCE: ${RUNTIME_AUDIENCE}

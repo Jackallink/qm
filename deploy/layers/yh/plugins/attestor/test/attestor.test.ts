@@ -86,6 +86,7 @@ function config(overrides: Partial<AttestorConfig> = {}): { config: AttestorConf
     egressAudience: "urn:qm:egress:1",
     isolationMode: "container",
     executorEnv: {},
+    egressGatewayContainerName: undefined,
     maxPreClaimSandboxes: 2,
     preClaimReapGraceMs: 1000,
     egressGateway: egress.client,

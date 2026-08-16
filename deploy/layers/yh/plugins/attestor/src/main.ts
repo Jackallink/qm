@@ -35,6 +35,7 @@ const config = {
   policySnapshotHash: requireEnv("POLICY_SNAPSHOT_HASH"),
   isolationMode: process.env.ISOLATION_MODE ?? "container",
   executorEnv: process.env.EXECUTOR_ENV ? (JSON.parse(process.env.EXECUTOR_ENV) as Record<string, string>) : {},
+  ...(process.env.EGRESS_GATEWAY_CONTAINER ? { egressGatewayContainerName: process.env.EGRESS_GATEWAY_CONTAINER } : {}),
   maxPreClaimSandboxes: Number(process.env.ATTESTOR_MAX_PRECLAIM_SANDBOXES ?? 8),
   preClaimReapGraceMs: Number(process.env.ATTESTOR_REAP_GRACE_MS ?? 30_000),
   bindingVersion: Number(process.env.BINDING_VERSION ?? 1),

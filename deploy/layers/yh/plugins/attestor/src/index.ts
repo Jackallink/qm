@@ -20,6 +20,7 @@ export interface AttestorConfig {
   policySnapshotHash: string;
   isolationMode: string;
   executorEnv: Record<string, string>;
+  egressGatewayContainerName?: string;
   maxPreClaimSandboxes: number;
   preClaimReapGraceMs: number;
   egressGateway: EgressGatewayClient;
@@ -145,6 +146,9 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
       try {
         await config.docker.pullImage(config.releaseImage);
         await config.docker.createNetwork(net, true);
+        if (config.egressGatewayContainerName) {
+          await config.docker.connectNetwork(config.egressGatewayContainerName, net);
+        }
         await config.docker.createVolume(vol);
         await config.docker.createContainer({
           image: config.releaseImage,

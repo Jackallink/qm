@@ -26,6 +26,8 @@ export interface DockerClient {
   inspectContainer(name: string): Promise<DockerContainerInfo | null>;
   listContainersByLabel(label: string): Promise<DockerContainerInfo[]>;
   writeFileIntoContainer(containerId: string, path: string, content: string): Promise<void>;
+  connectNetwork(containerName: string, networkName: string): Promise<void>;
+  disconnectNetwork(containerName: string, networkName: string): Promise<void>;
 }
 
 export function createDockerClient(opts: {
@@ -94,6 +96,12 @@ export function createDockerClient(opts: {
         if (info) out.push(info);
       }
       return out;
+    },
+    async disconnectNetwork(containerName, networkName) {
+      await run(`docker network disconnect ${shellQuote(networkName)} ${shellQuote(containerName)}`).catch(() => undefined);
+    },
+    async connectNetwork(containerName, networkName) {
+      await run(`docker network connect ${shellQuote(networkName)} ${shellQuote(containerName)}`).catch(() => undefined);
     },
     async writeFileIntoContainer(containerId, path, content) {
       const tmp = `/tmp/rt-token-${Date.now()}`;

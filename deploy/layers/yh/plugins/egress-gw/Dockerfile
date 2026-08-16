@@ -1,8 +1,9 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json ./
-COPY src/ ./src/
-COPY ../shared/src/ ./shared-src/
-RUN mkdir -p /app/shared && cp -r /app/shared-src /app/shared/src && rm -rf /app/shared-src
+COPY egress-gw/package.json ./
+RUN npm install --omit=dev
+COPY egress-gw/src/ ./src/
+COPY shared/src/ /shared/src/
+RUN ln -s /app/node_modules /shared/node_modules
 USER node
 CMD ["node", "--experimental-strip-types", "src/main.ts"]
