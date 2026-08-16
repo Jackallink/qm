@@ -16,6 +16,7 @@ import {
   type AbortExpected,
 } from "../src/remote-turn/tokens.ts";
 import { createRemoteTurnStore, type ClaimInput } from "../src/remote-turn/store.ts";
+import { sha256Hex } from "../src/remote-turn/tokens.ts";
 import type { PreClaimClaims } from "../src/remote-turn/attestation.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -413,6 +414,14 @@ test("claim consumes the turn JTI once, mints a verifiable abort token, and refu
     assert.equal(first.ok, true);
     if (first.ok) {
       assert.equal(first.executionLeaseHash.length, 64);
+      assert.match(first.executionLease, /^[0-9a-f]{32}$/);
+      assert.equal(sha256Hex(first.executionLease), first.executionLeaseHash);
+      const { rows: turnRows } = await p.query("SELECT * FROM remote_turn WHERE id=$1", [remoteTurnId]);
+      assert.ok(!JSON.stringify(turnRows[0]).includes(first.executionLease), "raw lease must never be persisted");
+      const { rows: eventRows } = await p.query("SELECT payload FROM remote_turn_events WHERE remote_turn_id=$1", [remoteTurnId]);
+      for (const er of eventRows) {
+        assert.ok(!JSON.stringify(er.payload).includes(first.executionLease), "raw lease must never enter event payloads");
+      }
       const nowSec = Math.floor(Date.now() / 1000);
       const verifiedAbort = await verifyAbortToken(
         first.abortToken,
@@ -436,6 +445,28 @@ test("claim consumes the turn JTI once, mints a verifiable abort token, and refu
       });
       assert.deepEqual(second, { ok: false, reason: "no_lease" });
     }
+  } finally {
+    await p.end();
+  }
+});
+
+test("claim presenting a nonce that does not match the persisted nonce hash gets no lease", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const { store } = await claimStore();
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    const remoteTurnId = await seedDispatchingTurn(p, "f".repeat(64), "e".repeat(64));
+    const result = await store.claim({
+      remoteTurnId,
+      turnJtiHash: "f".repeat(64),
+      attestationNonceHash: "d".repeat(64),
+      verifiedPreClaim: validPreClaim(remoteTurnId, "f".repeat(64), "d".repeat(64)),
+      runtimeAudience: "urn:qm:v1:runtime:org1:r1",
+      version: 1,
+    });
+    assert.deepEqual(result, { ok: false, reason: "no_lease" });
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [remoteTurnId]);
+    assert.equal(rows[0].status, "dispatching");
   } finally {
     await p.end();
   }

@@ -84,7 +84,7 @@ export type DispatchResult =
 export type ExpirePreClaimResult = "expired" | "not_expired" | "not_dispatchable";
 
 export type LeaseResult =
-  | { ok: true; executionLeaseHash: string; abortToken: string }
+  | { ok: true; executionLease: string; executionLeaseHash: string; abortToken: string }
   | { ok: false; reason: "no_lease" | "attestation_invalid" };
 
 export interface StartExecutionInput {
@@ -457,8 +457,9 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
                JOIN remote_turn t ON t.binding_id = b.id WHERE t.id = $1)
          WHERE id=$1 AND status='dispatching' AND turn_jti_hash=$6 AND abort_requested_at IS NULL AND version=$7 AND binding_version=$8
            AND (SELECT extract(epoch from transaction_timestamp())) <= pre_claim_expires_at
+           AND attestation_nonce_hash=$9
          RETURNING core_run_id, binding_id, binding_version, turn_jti_hash`,
-        [input.remoteTurnId, executionLeaseHash, verified.intendedWorkloadIdentity, verified.plannedSandboxId, claimedAt, input.turnJtiHash, input.version, verified.bindingVersion],
+        [input.remoteTurnId, executionLeaseHash, verified.intendedWorkloadIdentity, verified.plannedSandboxId, claimedAt, input.turnJtiHash, input.version, verified.bindingVersion, input.attestationNonceHash],
       );
       const row = rows[0];
       if (!row) return { ok: false as const, reason: "no_lease" as const };
@@ -487,7 +488,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         },
         abortKey,
       );
-      return { ok: true as const, executionLeaseHash, abortToken };
+      return { ok: true as const, executionLease, executionLeaseHash, abortToken };
     });
     return result;
   }
