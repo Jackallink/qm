@@ -19,6 +19,8 @@ function payload(): DispatchPayload {
     attestationNonce: "nonce-1234567890abcdef",
     releaseDigest: "d".repeat(64),
     turnToken: "eyJ.abc.def",
+    text: "hello",
+    history: [],
   };
 }
 
