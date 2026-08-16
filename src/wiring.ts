@@ -170,6 +170,7 @@ import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/o
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPrimeHarness } from "./harness/prime-harness.ts";
+import { createHermesHarness } from "./harness/hermes-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { NonRetryableTurnError } from "./core/turn-error.ts";
@@ -887,6 +888,15 @@ export function buildApp(
                   );
                 },
               },
+            }),
+          ] as const,
+          [
+            "hermes",
+            createHermesHarness({
+              cliPath: config.hermesBaseUrl ?? "hermes",
+              model: config.hermesModel ?? "deepseek-v4-flash",
+              provider: "deepseek",
+              sessionDirBase: config.primeSessionDir ?? "/tmp/hermes-sessions",
             }),
           ] as const,
           ["mock", createMockHarness()] as const,

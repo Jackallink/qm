@@ -11,7 +11,7 @@ const getModel = getBuiltinModel as unknown as (provider: string, id: string) =>
 export const DEFAULT_AGENT_MODEL_ID = "claude-opus-5";
 export const DEFAULT_CODEX_MODEL_ID = "gpt-5.6-sol";
 export const THINKING_LEVELS = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;
-export const HARNESS_IDS = ["pi", "opencode", "codex", "claude", "mock", "prime"] as const;
+export const HARNESS_IDS = ["pi", "opencode", "codex", "claude", "mock", "prime", "hermes"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
 
 export const MODEL_PROVIDERS = ["anthropic", "openai", "openrouter"] as const;
@@ -118,7 +118,7 @@ export function modelSupportedByHarness(id: string | undefined, harness: string)
   const provider = resolveModel(id)?.provider;
   if (harness === "claude") return provider === "anthropic" || /^claude-/i.test(id);
   if (harness === "codex") return provider === "openai" || /^(?:gpt-|o\d|codex|openai\/)/i.test(id);
-  if (harness === "prime") return provider === "deepseek" || provider === "openai" || Boolean(resolveModel(id));
+  if (harness === "prime" || harness === "hermes") return provider === "deepseek" || provider === "openai" || Boolean(resolveModel(id));
   return false;
 }
 

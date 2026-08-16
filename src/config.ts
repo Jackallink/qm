@@ -29,7 +29,7 @@ export interface Config {
   orgId: string;
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
-  harness: "mock" | "pi" | "opencode" | "codex" | "claude" | "prime";
+  harness: "mock" | "pi" | "opencode" | "codex" | "claude" | "prime" | "hermes";
   textOnlyMode: boolean;
   securityPosture: SecurityPosture;
   sandboxBackend: "aws" | "disabled" | "local" | "sprites";
@@ -44,6 +44,8 @@ export interface Config {
   primeSessionDir?: string;
   primeArgs?: string;
   primeSandbox?: boolean;
+  hermesBaseUrl?: string;
+  hermesModel?: string;
   opencodeModel?: string;
   codexModel?: string;
   codexBinPath?: string;
@@ -491,10 +493,10 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
 function harnessEnvStrict(value: string | undefined): Config["harness"] {
   if (value === undefined || value.trim() === "") return "mock";
   const harness = value.trim();
-  if (harness === "mock" || harness === "pi" || harness === "opencode" || harness === "codex" || harness === "claude" || harness === "prime")
+  if (harness === "mock" || harness === "pi" || harness === "opencode" || harness === "codex" || harness === "claude" || harness === "prime" || harness === "hermes")
     return harness;
   throw new Error(
-    `HARNESS=${JSON.stringify(value)} is not recognized — use mock, pi, opencode, codex, claude, or prime, or unset it.`,
+    `HARNESS=${JSON.stringify(value)} is not recognized — use mock, pi, opencode, codex, claude, prime, or hermes, or unset it.`,
   );
 }
 
@@ -853,6 +855,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
     ...(env.PRIME_ARGS ? { primeArgs: env.PRIME_ARGS } : {}),
     ...(env.PRIME_SANDBOX ? { primeSandbox: boolEnvStrict("PRIME_SANDBOX", env.PRIME_SANDBOX) } : {}),
+    ...(env.HERMES_BASE_URL ? { hermesBaseUrl: env.HERMES_BASE_URL } : {}),
+    ...(env.HERMES_MODEL ? { hermesModel: env.HERMES_MODEL } : {}),
     ...(env.CONNECTOR_SECRET_KEY ? { connectorSecretKey: env.CONNECTOR_SECRET_KEY } : {}),
     secretsBackend: secretsBackendEnvStrict(env.SECRETS_BACKEND, env.SECRETS_PREFIX ?? ""),
     secretsPrefix: env.SECRETS_PREFIX ?? "",

@@ -1,156 +1,201 @@
 /**
- * Hermes Agent harness adapter.
+ * Hermes Agent harness adapter — ACP (Agent Client Protocol) stdio client.
  *
- * Hermes is an external agent execution engine with its own HTTP API.
- * This adapter wraps it as a first-class QM harness — same pattern as
- * the opencode / codex / claude adapters: QM owns the session lifecycle
- * and routing, Hermes owns the agent execution loop.
- *
- * Profile:
- *   controlTransport: "json-rpc" (Hermes speaks JSON over HTTP/stdio)
- *   toolTransport:    "in-process" (tools are provided by QM, not Hermes)
- *   capabilities:     abort, steer, images, thinking-level, fast-mode
+ * Hermes runs `hermes acp` as a JSON-RPC 2.0 stdio server (stdout is the
+ * protocol transport, stderr is logs). QM owns the session lifecycle and
+ * routing; Hermes owns the agent execution loop. Per-scope Hermes
+ * sessions keep context across turns.
  */
+import { spawn } from "node:child_process";
 import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnResult } from "./harness.ts";
 
 export interface HermesHarnessOptions {
-  /** Base URL of the deployed Hermes engine (e.g. http://hermes:8080). */
-  baseUrl?: string;
-  /** Hermes agent endpoint (default: /api/v1/agent/run). */
-  agentPath?: string;
-  /** Default model id for Hermes. */
+  /** hermes CLI path (default: "hermes" on PATH). */
+  cliPath?: string;
+  /** Working directory for the agent process. */
+  cwd?: string;
+  /** Default model (e.g. "deepseek-v4-flash"). */
   model?: string;
-  /** API key for Hermes (if authentication is required). */
-  apiKey?: string;
-  /** HTTP timeout for turn execution (ms). */
+  /** Default provider (e.g. "deepseek"). */
+  provider?: string;
+  /** Per-scope session base dir (multi-tenant boundary). */
+  sessionDirBase?: string;
+  /** Extra env for the child process. */
+  env?: Record<string, string>;
+  /** Turn timeout (ms). Default 300s. */
   timeoutMs?: number;
 }
 
+interface AcpClient {
+  call(method: string, params: unknown, timeoutMs?: number): Promise<Record<string, unknown>>;
+  stop(): Promise<void>;
+}
+
+function createAcpClient(opts: {
+  cliPath: string;
+  cwd?: string;
+  env?: Record<string, string>;
+}): AcpClient {
+  const child = spawn(opts.cliPath, ["acp"], {
+    cwd: opts.cwd,
+    env: { ...process.env, ...(opts.env ?? {}) },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  let buf = "";
+  let nextId = 0;
+  const pending = new Map<number, { resolve: (m: Record<string, unknown>) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  child.stdout.on("data", (d: Buffer) => {
+    buf += d.toString("utf8");
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let msg: { id?: number; result?: unknown; error?: { message?: string } };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const p = pending.get(msg.id)!;
+        clearTimeout(p.timer);
+        pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message ?? "hermes ACP error"));
+        else p.resolve((msg.result ?? {}) as Record<string, unknown>);
+      }
+    }
+  });
+  child.on("exit", (code) => {
+    const err = new Error(`hermes ACP exited (code ${code})`);
+    for (const p of pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    pending.clear();
+  });
+  return {
+    call(method, params, timeoutMs = 300_000): Promise<Record<string, unknown>> {
+      const id = ++nextId;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`hermes ACP ${method} timed out (${timeoutMs}ms)`));
+        }, timeoutMs);
+        pending.set(id, { resolve, reject, timer });
+        child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      });
+    },
+    async stop(): Promise<void> {
+      if (child.exitCode === null) child.kill();
+    },
+  };
+}
+
 export function createHermesHarness(opts: HermesHarnessOptions = {}): Harness {
-  const baseUrl = (opts.baseUrl ?? "http://hermes:8080").replace(/\/$/, "");
-  const agentPath = opts.agentPath ?? "/api/v1/agent/run";
+  const cliPath = opts.cliPath ?? "hermes";
+  const sessionDirBase = opts.sessionDirBase ?? "/tmp/hermes-sessions";
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  const clients = new Map<string, AcpClient>();
+  const sessionIds = new Map<string, string>();
+
   const profile = {
     id: "hermes" as const,
     controlTransport: "json-rpc" as const,
     toolTransport: "in-process" as const,
     transcriptFormat: "json",
-    capabilities: new Set(["abort", "steer", "images", "thinking-level", "fast-mode"] as const),
+    capabilities: new Set(["abort", "steer", "thinking-level", "fast-mode"] as const),
   };
 
-  const hermesCall = async (
-    input: HarnessTurnInput,
-  ): Promise<HarnessTurnResult> => {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
-    };
+  const scopeDir = (scope: string): string => {
+    const safe = scope.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return `${sessionDirBase.replace(/\/$/, "")}/${safe}`;
+  };
 
-    // Map QM's turn model to Hermes' agent run API.
-    const body = JSON.stringify({
-      session_id: input.session.id,
-      scope: input.scopeLabel,
-      message: input.input,
-      system_prompt: input.systemPrompt,
-      history: (input.history ?? []).map((e) => {
-        const raw = e as unknown as Record<string, unknown>;
-        return { role: raw.role ?? "user", content: raw.content ?? "" };
-      }),
-      model: input.model ?? opts.model ?? "default",
-      thinking_level: input.thinkingLevel,
-      fast_mode: input.fastMode,
-      tools: [], // tools are QM-side for the MVP; Hermes can receive them later
-    });
-
-    const controller = new AbortController();
-    if (input.cancel) {
-      input.cancel.addEventListener("abort", () => controller.abort(), { once: true });
+  const clientFor = async (scope: string): Promise<AcpClient> => {
+    let client = clients.get(scope);
+    if (!client) {
+      client = createAcpClient({ cliPath, cwd: scopeDir(scope), env: opts.env });
+      await client.call("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        clientInfo: { name: "qm", title: "QM Agent", version: "1" },
+      }, 30_000);
+      clients.set(scope, client);
     }
+    return client;
+  };
 
+  const sessionFor = async (scope: string): Promise<string> => {
+    let id = sessionIds.get(scope);
+    if (!id) {
+      const client = await clientFor(scope);
+      const res = await client.call("session/new", { cwd: scopeDir(scope), mcpServers: [] }, 60_000);
+      id = String((res as { sessionId?: string }).sessionId ?? "");
+      if (!id) throw new Error("hermes ACP did not return a sessionId");
+      sessionIds.set(scope, id);
+    }
+    return id;
+  };
+
+  const teardown = async (): Promise<void> => {
+    await Promise.allSettled([...clients.values()].map((c) => c.stop()));
+    clients.clear();
+    sessionIds.clear();
+  };
+
+  const runTurn = async (input: HarnessTurnInput): Promise<HarnessTurnResult> => {
+    const scope = input.scopeLabel;
+    const client = await clientFor(scope);
+    const sessionId = await sessionFor(scope);
+    const abortController = input.cancel;
+    const abortPromise = abortController
+      ? new Promise<never>((_, reject) =>
+          abortController.addEventListener(
+            "abort",
+            () => {
+              void client.call("session/abort", { sessionId }).catch(() => undefined);
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          ),
+        )
+      : null;
+
+    const promptParams = {
+      sessionId,
+      prompt: [{ type: "text", text: input.input }],
+      ...(input.model ? { model: { provider: opts.provider ?? "deepseek", model: input.model } } : {}),
+    };
     try {
-      const res = await fetch(`${baseUrl}${agentPath}`, {
-        method: "POST",
-        headers,
-        body,
-        signal: controller.signal,
+      const started = Date.now();
+      const result = await Promise.race([
+        client.call("session/prompt", promptParams, timeoutMs),
+        ...(abortPromise ? [abortPromise] : []),
+      ]);
+      const text = String((result as { text?: unknown }).text ?? "");
+      input.onDelta?.(text.slice(0, 100));
+      input.recordLlmRequest?.({
+        turnSeq: null,
+        step: 0,
+        model: input.model ?? "hermes",
+        request: { prompt: input.input },
+        truncated: false,
+        durationMs: Date.now() - started,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, costUsd: 0 },
       });
-
-      if (!res.ok) {
-        return {
-          reply: `[hermes] agent call failed: HTTP ${res.status}`,
-          modelCalls: 0,
-        };
-      }
-
-      const data = (await res.json()) as {
-        reply?: string;
-        status?: string;
-        error?: string;
-        model_calls?: number;
-        pending_approvals?: Array<{
-          command: string;
-          reason: string;
-          kind?: "approval";
-        }>;
-      };
-
-      return {
-        reply: data.reply ?? data.error ?? "[hermes] empty response",
-        modelCalls: data.model_calls ?? 1,
-        ...(data.pending_approvals?.length
-          ? { pendingApprovals: data.pending_approvals }
-          : {}),
-      };
+      return { reply: text.trim(), modelCalls: 1 };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return {
-        reply: `[hermes] agent call failed: ${message}`,
-        modelCalls: 0,
-      };
+      if (input.cancel?.aborted) return { reply: "", stopped: true, modelCalls: 0 };
+      throw error;
     }
   };
 
-  return defineHarness(
-    profile,
-    {
-      async runTurn(input: HarnessTurnInput): Promise<HarnessTurnResult> {
-        const started = Date.now();
-        const result = await hermesCall(input);
-
-        // Emit a fake delta so the UI doesn't look stuck (Hermes response is
-        // not streamed in the MVP — future: SSE streaming).
-        if (result.reply && !result.reply.startsWith("[hermes]")) {
-          // chunk-wise onDelta for basic UX
-          for (let i = 0; i < result.reply.length; i += 100) {
-            input.onDelta?.(result.reply.slice(i, i + 100));
-          }
-        }
-
-        // Record model call for audit/budget
-        if (input.recordLlmRequest) {
-          const rec = input.recordLlmRequest;
-          void (rec as (r: unknown) => unknown)({
-            turnSeq: null,
-            step: 0,
-            model: input.model ?? opts.model ?? "hermes",
-            request: { prompt: input.input },
-            truncated: false,
-            durationMs: Date.now() - started,
-          });
-        }
-
-        return result;
-      },
-
-      async close(): Promise<void> {
-        // Hermes is externally managed — no local process to tear down.
-      },
-
-      contextTokenBudget(): number | undefined {
-        return 200_000;
-      },
+  return defineHarness(profile, {
+    runTurn,
+    close: teardown,
+    resetSession: async () => {
+      await teardown();
     },
-    {
-      name: (coreName) => (coreName === "execute" ? "hermes_execute" : coreName),
-    },
-  );
+  });
 }
