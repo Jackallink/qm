@@ -170,6 +170,14 @@ import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/o
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPrimeHarness } from "./harness/prime-harness.ts";
+import { createAgentRegistryStore } from "./agent/agent-registry.ts";
+import { createSopRunStore } from "./agent/sop-store.ts";
+import { createMessengerStore } from "./agent/messenger-store.ts";
+import { createSchedulerStore } from "./agent/scheduler-store.ts";
+import type { AgentRegistryStore } from "./agent/agent-registry.ts";
+import type { SopRunStore } from "./agent/sop-store.ts";
+import type { MessengerStore } from "./agent/messenger-store.ts";
+import type { SchedulerStore } from "./agent/scheduler-store.ts";
 import { createHermesHarness } from "./harness/hermes-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
@@ -324,6 +332,10 @@ export interface BuiltApp {
   sessions: SessionStore;
   runs: RunStore;
   remoteTurnStore?: RemoteTurnStore;
+  agentRegistry: AgentRegistryStore;
+  sopStore: SopRunStore;
+  messengerStore: MessengerStore;
+  schedulerStore: SchedulerStore;
   remoteTurnBindingStore?: RemoteBindingStore;
   remoteTurnTransportAuth?: TransportAuthVerifier;
   remoteTurnAttestationVerifier?: ReturnType<typeof createAttestationVerifier>;
@@ -978,6 +990,14 @@ export function buildApp(
           },
         }
       : undefined;
+  const agentRegistry = createAgentRegistryStore(artifactMap<import("./agent/agent-manifest.ts").AgentManifest>("agents"));
+  const sopStore = createSopRunStore(artifactMap<import("./agent/sop-engine.ts").SopRun>("sop_runs"));
+  const messengerStore = createMessengerStore(
+    artifactMap<import("./agent/agent-messenger.ts").AgentMessage>("agent_messages"),
+    artifactMap<import("./agent/agent-messenger.ts").AgentSubscription>("agent_subscriptions"),
+  );
+  const schedulerStore = createSchedulerStore(artifactMap<import("./agent/agent-scheduler.ts").ScheduledJob>("scheduled_jobs"));
+
   const remoteTurnReconciler: RemoteTurnReconciler | undefined =
     remoteTurnStore && remoteTurnAttestorGateway
       ? createRemoteTurnReconciler({
@@ -1663,6 +1683,10 @@ export function buildApp(
     sessions,
     runs,
     ...(remoteTurnStore ? { remoteTurnStore } : {}),
+    agentRegistry,
+    sopStore,
+    messengerStore,
+    schedulerStore,
     ...(remoteTurnBindingStore ? { remoteTurnBindingStore } : {}),
     ...(remoteTurnTransportAuth ? { remoteTurnTransportAuth } : {}),
     ...(remoteTurnStore ? { remoteTurnAttestationVerifier } : {}),

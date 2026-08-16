@@ -32,6 +32,10 @@ import {
   listSlackMirrorMessages,
 } from "./admin/slack-mirror.ts";
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
+import { agentRoutes } from "./admin/agents.ts";
+import { sopRoutes } from "./admin/sop-runs.ts";
+import { messengerRoutes } from "./admin/messenger.ts";
+import { schedulerRoutes } from "./admin/scheduler.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 
@@ -99,6 +103,10 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/admin/memory", auth: "either", handle: putAdminMemory },
   { method: "GET", path: "/v1/admin/sandbox-routes", auth: "either", handle: listSandboxRoutes },
   { method: "POST", path: "/v1/admin/sandbox-routes/:scopeId/migrate", auth: "either", handle: migrateSandboxScope },
+  ...agentRoutes,
+  ...sopRoutes,
+  ...messengerRoutes,
+  ...schedulerRoutes,
   { method: "GET", path: "/v1/admin/users", auth: "either", handle: listUsers },
   { method: "GET", path: "/v1/admin/directory", auth: "either", handle: searchDirectory },
   { method: "GET", path: "/v1/admin/keychain", auth: "either", handle: listKeychainStatus },

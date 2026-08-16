@@ -499,6 +499,22 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
+    match: (m, p) =>
+      (m === "GET" && p === "/v1/agent-templates") ||
+      (m === "GET" && p.startsWith("/v1/sop-runs/")) ||
+      (m === "POST" && p.includes("/gates/")),
+    when: (v) => v.isAdmin && v.claims.liveActor === true,
+    guidance:
+      "Agent management plane: templates and SOP/gate workflows (sign, rollback, history) — audited under the acting admin; confirm before signing or rolling back a gate.",
+    routes: [
+      { method: "GET", path: "/v1/agent-templates", summary: "list available agent templates" },
+      { method: "GET", path: "/v1/sop-runs/:id", summary: "read a SOP run and its gate state" },
+      { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/sign", summary: "sign a gate (freezes the SOP)" },
+      { method: "POST", path: "/v1/sop-runs/:id/gates/:gate/rollback", summary: "roll back to a gate (supersedes the run)" },
+      { method: "GET", path: "/v1/sop-runs/:id/history", summary: "gate history for a run" },
+    ],
+  },
+  {
     match: (_m, p) => p.startsWith("/v1/admin/"),
     when: (v) => v.isAdmin && v.claims.liveActor === true,
     guidance:

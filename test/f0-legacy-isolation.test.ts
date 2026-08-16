@@ -83,45 +83,19 @@ test("legacy persisted and requested runtime selections cannot reactivate a lega
   assert.deepEqual(resolveRuntimeChoice(legacyOnly, ORG, PERSONAL, FALLBACK), FALLBACK);
 });
 
-test("production wiring has no legacy adapters or legacy control-plane stores", async () => {
+test("agent management stores are wired and exposed (re-enabled from F0)", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "f0-isolation-")) }));
   try {
     for (const key of ["agentRegistry", "sopStore", "messengerStore", "schedulerStore"])
-      assert.equal(key in built, false, `${key} must not be exposed by buildApp`);
+      assert.equal(key in built, true, `${key} must be exposed by buildApp`);
   } finally {
     await built.runtime.stop();
   }
 });
 
-test("legacy Agent control-plane paths are absent from the route table and HTTP surface", async () => {
+test("legacy control-plane paths (emergency/dashboard) are absent; agent management routes are present", async () => {
   const legacyRoutes: ReadonlyArray<readonly [string, string]> = [
-    ["GET", "/v1/agent-templates"],
-    ["GET", "/v1/admin/workspaces/workspace/agents"],
-    ["POST", "/v1/admin/workspaces/workspace/agents"],
-    ["GET", "/v1/admin/workspaces/workspace/agents/agent"],
-    ["PUT", "/v1/admin/workspaces/workspace/agents/agent"],
-    ["DELETE", "/v1/admin/workspaces/workspace/agents/agent"],
-    ["GET", "/v1/admin/agents/health"],
-    ["GET", "/v1/admin/agents/agent/health"],
-    ["POST", "/v1/admin/agents/agent/control-heartbeat"],
-    ["GET", "/v1/admin/agents/running"],
-    ["GET", "/v1/admin/workspaces/workspace/sop-runs"],
-    ["POST", "/v1/admin/workspaces/workspace/sop-runs"],
-    ["GET", "/v1/sop-runs/run"],
-    ["POST", "/v1/sop-runs/run/gates/gate/sign"],
-    ["POST", "/v1/sop-runs/run/gates/gate/rollback"],
-    ["GET", "/v1/sop-runs/run/history"],
-    ["POST", "/v1/admin/agents/agent/messages"],
-    ["GET", "/v1/admin/agents/agent/inbox"],
-    ["POST", "/v1/admin/agents/agent/inbox/message/ack"],
-    ["POST", "/v1/admin/agents/agent/subscribe"],
-    ["POST", "/v1/admin/agents/agent/heartbeat"],
-    ["GET", "/v1/admin/scheduler/jobs"],
-    ["POST", "/v1/admin/scheduler/jobs"],
-    ["POST", "/v1/admin/scheduler/jobs/job/pause"],
-    ["POST", "/v1/admin/scheduler/jobs/job/resume"],
-    ["POST", "/v1/admin/scheduler/check-loop"],
-    ["POST", "/v1/admin/emergency/skills/skill/disable"],
+                                                                                                            ["POST", "/v1/admin/emergency/skills/skill/disable"],
     ["POST", "/v1/admin/emergency/agents/agent/revoke-tokens"],
     ["POST", "/v1/admin/emergency/circuit-break"],
     ["POST", "/v1/admin/emergency/sessions/session/kill"],
