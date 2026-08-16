@@ -89,7 +89,7 @@ function validateCapabilityBoundary(manifest: AgentManifest): RegistrationGateRe
     issues.push("agent cannot have both deploy and audit capabilities (segregation of duties)");
   }
 
-  if (ops?.write && ops.write.length > 0) {
+  if (manifest.template === "custom" && ops?.write && ops.write.length > 0) {
     issues.push("write operations require approval before enablement");
   }
 

@@ -78,7 +78,7 @@ test("registry delete soft-deletes without an invalid transition", async () => {
 
 test("registration review rejects write-capable agents without mutating the manifest", async () => {
   const { reviewAgentRegistration } = await import("../src/agent/registration-pipeline.ts");
-  const base = manifest({ status: "draft" });
+  const base = manifest({ status: "draft", template: "custom" });
   const withWrite = {
     ...base,
     capabilities: { operations: { write: ["files"] } },
@@ -86,10 +86,25 @@ test("registration review rejects write-capable agents without mutating the mani
   const review = reviewAgentRegistration(withWrite, { isPlatformAdmin: false });
   assert.equal(review.passed, false, "write operations must be gated");
   assert.equal(review.blockedBy, 3, "the capability-boundary gate blocks");
-  const stored = review.manifest ?? withWrite;
   assert.equal(
-    JSON.stringify(stored.capabilities?.operations?.write),
+    JSON.stringify(withWrite.capabilities?.operations?.write),
     JSON.stringify(["files"]),
     "the manifest must not be mutated by the review",
   );
+  const gate3 = review.gates.find((g) => g.gate === 3);
+  assert.ok(gate3, "gate 3 result present");
+  assert.equal(gate3!.passed, false);
+});
+
+test("endorsed template write ops pass the capability-boundary gate", async () => {
+  const { reviewAgentRegistration } = await import("../src/agent/registration-pipeline.ts");
+  const endorsed = manifest({ template: "modeler" });
+  endorsed.capabilities = {
+    skills: [{ slug: "itsi-metric-skill" }],
+    tags: ["modeling"],
+    operations: { write: ["yhp:view", "yhp:search"] },
+  };
+  const review = reviewAgentRegistration(endorsed, { isPlatformAdmin: false });
+  assert.equal(review.passed, true, "built-in template write ops are platform-endorsed");
+  assert.equal(JSON.stringify(endorsed.capabilities.operations.write), JSON.stringify(["yhp:view", "yhp:search"]));
 });

@@ -125,7 +125,7 @@ export async function createAgent(ctx: ApiCtx): Promise<void> {
 
   // 🔒 安全审查流水线
   const review = reviewAgentRegistration(manifest, {
-    isPlatformAdmin: false, // 默认非平台管理员；公开 Agent 需额外审批
+    isPlatformAdmin: false,
   });
   if (!review.passed) {
     return sendJson(ctx.res, 403, {
