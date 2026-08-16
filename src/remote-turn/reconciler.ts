@@ -114,7 +114,12 @@ export function createRemoteTurnReconciler(opts: ReconcileOptions): RemoteTurnRe
         leaseToken: turn.runLeaseToken,
         envelope: { turnJti: jti, attestationNonce: nonce },
       });
-      if (dispatched.ok) reconciled += 1;
+      if (!dispatched.ok) continue;
+      const payload = await opts.store.getDispatchPayload(turn.remoteTurnId);
+      if (payload && binding) {
+        const sent = await opts.transport.sendTurn(payload, binding.transportServiceId, baseUrl);
+        if (sent.ok) reconciled += 1;
+      }
     }
     for (const turn of dispatching) {
       if (opts.transport && opts.bindings) {

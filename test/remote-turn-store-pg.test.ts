@@ -62,7 +62,7 @@ function g0(scopeId: string, conversationKey: string, overrides: Partial<G0Conte
     actorId: "actor-1",
     scopeId,
     conversationKey,
-    governanceDecisionId: "dec-1",
+    governanceDecisionId: `dec-${randomUUID()}`,
     governanceAuthorizationDigest: "authz-1",
     traceId: "trace-1",
     ...overrides,

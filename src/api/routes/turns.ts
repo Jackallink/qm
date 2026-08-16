@@ -43,11 +43,6 @@ async function remoteTurnAdmission(ctx: ApiCtx, body: TurnRequest): Promise<bool
     sendJson(res, 403, { error: "refused", message: "governance context verification failed" });
     return true;
   }
-  const consumed = await deps.remoteTurnStore.consumeGovernanceDecision(claims.governanceDecisionId);
-  if (!consumed) {
-    sendJson(res, 403, { error: "refused", message: "governance_replay" });
-    return true;
-  }
   const bindings = await deps.remoteTurnBindingStore.listBindings();
   const binding = bindings.find((b) => b.enabled && b.allowedScopeId === claims.scopeId);
   if (!binding) {

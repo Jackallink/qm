@@ -56,7 +56,7 @@ function g0(scopeId: string, conversationKey: string): G0Context {
     actorId: "actor-1",
     scopeId,
     conversationKey,
-    governanceDecisionId: "gov-1",
+    governanceDecisionId: `gov-${randomUUID()}`,
     governanceAuthorizationDigest: "g".repeat(64),
     traceId: "trace-1",
   };

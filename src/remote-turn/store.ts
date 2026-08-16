@@ -43,7 +43,8 @@ export type RefusalReason =
   | "remote_input_invalid"
   | "remote_turn_active"
   | "budget_insufficient"
-  | "remote_run_exists";
+  | "remote_run_exists"
+  | "governance_replay";
 
 export type AdmitResult =
   | { status: "admitted"; remoteTurnId: string; coreRunId: string; runLeaseToken: string }
@@ -375,6 +376,12 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         if (!input.text.trim() || textBytes > Number(binding!.max_input_bytes)) refusal("remote_input_invalid");
         if (input.history.length > Number(binding!.max_history_messages)) refusal("remote_input_invalid");
 
+        const { rowCount: decisionConsumed } = await client.query(
+          "INSERT INTO remote_turn_governance_consumption(decision_id, remote_turn_id, consumed_at) VALUES($1,$2,$3) ON CONFLICT (decision_id) DO NOTHING",
+          [input.g0.governanceDecisionId, remoteTurnId, now()],
+        );
+        if (decisionConsumed !== 1) refusal("governance_replay");
+
         const session = await getOrCreateByThreadOn(
           client,
           input.threadRef,
@@ -496,7 +503,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const reason = (["governance_authorization_required", "runtime_not_enabled", "remote_input_invalid", "remote_turn_active", "budget_insufficient"] as const).find(
+      const reason = (["governance_authorization_required", "runtime_not_enabled", "remote_input_invalid", "remote_turn_active", "budget_insufficient", "governance_replay"] as const).find(
         (r) => message.includes(r),
       );
       if (!reason) throw error;
@@ -586,11 +593,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     turn: Record<string, unknown>,
   ): Promise<string> {
     if (!abortKey) throw new Error("remote turn signing key is not configured");
-    const { rows: bindingRows } = await client.query<{ runtime_audience: string }>(
-      "SELECT runtime_audience FROM remote_runtime_binding WHERE id=$1",
+    const { rows: bindingRows } = await client.query<{ runtime_audience: string; token_ttl_ms: number }>(
+      "SELECT runtime_audience, token_ttl_ms FROM remote_runtime_binding WHERE id=$1",
       [turn.binding_id as string],
     );
-    const audience = bindingRows[0]?.runtime_audience ?? "";
+    const bindingRow = bindingRows[0];
+    const audience = bindingRow?.runtime_audience ?? "";
+    const ttlSec = Math.min(Number(bindingRow?.token_ttl_ms ?? 90_000) / 1000, 90);
     const nowSec = Math.floor(now() / 1000);
     return mintTurnToken(
       {
@@ -599,7 +608,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         aud: audience,
         iat: nowSec,
         nbf: nowSec,
-        exp: nowSec + 90,
+        exp: nowSec + ttlSec,
         jti: envelope.turnJti,
         capability: "turn",
         remoteTurnId,

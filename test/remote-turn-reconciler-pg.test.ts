@@ -97,7 +97,7 @@ function g0(scopeId: string, conversationKey: string): G0Context {
     actorId: "actor-1",
     scopeId,
     conversationKey,
-    governanceDecisionId: "dec-1",
+    governanceDecisionId: `dec-${randomUUID()}`,
     governanceAuthorizationDigest: "authz-1",
     traceId: "trace-1",
   };
@@ -1130,5 +1130,56 @@ test("reconciler resends the persisted envelope to dispatching turns via the tra
   assert.ok(typeof sent[0]!["turnToken"] === "string" && sent[0]!["turnToken"].length > 0, "the persisted turn token must be sent");
   assert.equal(result.reconciled >= 1, true);
 
+  await bindings.close();
+});
+
+test("reconciler first-dispatches admitted turns via prepareDispatch and the transport", { skip }, async () => {
+  const attestor = await makeEdKeys("attestor-1");
+  const bindingId = `binding-${randomUUID()}`;
+  const scopeId = `scope-${randomUUID()}`;
+  const bindings = createRemoteBindingStore(URL!);
+  await bindings.createBinding({
+    ...bindingBase,
+    bindingId,
+    allowedScopeId: scopeId,
+    attestorKeys: attestor.keySet,
+    transportServiceId: "svc-first",
+  });
+  const store = createRemoteTurnStore(URL!, {
+    abortKey: { kid: attestor.kid, privateKeyPem: attestor.privateKey.export({ type: "pkcs8", format: "pem" }).toString() },
+  });
+  const input = admitInput(bindingId, scopeId);
+  const admitted = await store.admit(input);
+  assert.equal(admitted.status, "admitted");
+  if (admitted.status !== "admitted") return;
+
+  const sent: Array<Record<string, unknown>> = [];
+  const transport = {
+    resolveService: (id: string) => (id === "svc-first" ? "https://runtime.test" : null),
+    async sendTurn(payload: Record<string, unknown>, _serviceId: string, _baseUrl: string) {
+      sent.push(payload);
+      return { ok: true as const };
+    },
+  };
+  const reconciler = createRemoteTurnReconciler({
+    store,
+    attestor: { querySandboxState: async () => ({ exists: false, running: false, startProofSeen: false, terminationSeen: false, egressRevoked: false, terminationProofDigest: null }) },
+    transport: transport as never,
+    bindings,
+  });
+  const result = await reconciler.sweep();
+  assert.equal(sent.length, 1, "the admitted turn must be first-dispatched");
+  assert.equal(sent[0]!["remoteTurnId"], admitted.remoteTurnId);
+  assert.ok(typeof sent[0]!["turnToken"] === "string" && sent[0]!["turnToken"].length > 0, "a turn token must be minted at dispatch");
+  assert.equal(result.reconciled >= 1, true);
+
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    const { rows } = await p.query("SELECT status FROM remote_turn WHERE id=$1", [admitted.remoteTurnId]);
+    assert.equal(rows[0].status, "dispatching", "the turn must reach dispatching");
+  } finally {
+    await p.end();
+  }
   await bindings.close();
 });

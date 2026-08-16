@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: qm-dev
+      POSTGRES_DB: qm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  egress-gw:
+    build: ./plugins/egress-gw
+    environment:
+      METERING_KEY_KID: ${METERING_KEY_KID}
+      METERING_KEY: ${METERING_KEY}
+      PROVIDER_API_KEY: ${PROVIDER_API_KEY}
+      PORT: "48080"
+
+  attestor:
+    build: ./plugins/attestor
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      ATTESTOR_KEY_KID: ${ATTESTOR_KEY_KID}
+      ATTESTOR_KEY: ${ATTESTOR_KEY}
+      ATTESTOR_PG_URL: postgres://postgres:qm-dev@postgres:5432/qm
+      CORE_VERIFICATION_KEYS: ${CORE_VERIFICATION_KEYS}
+      RUNTIME_AUDIENCE: ${RUNTIME_AUDIENCE}
+      ATTESTOR_RELEASE_DIGEST: ${ATTESTOR_RELEASE_DIGEST}
+      ATTESTOR_RELEASE_IMAGE: ${ATTESTOR_RELEASE_IMAGE}
+      NETWORK_POLICY_ID: ${NETWORK_POLICY_ID}
+      ENDPOINT_ALLOWLIST: ${ENDPOINT_ALLOWLIST}
+      EGRESS_AUDIENCE: ${EGRESS_AUDIENCE}
+      POLICY_SNAPSHOT_HASH: ${POLICY_SNAPSHOT_HASH}
+      EGRESS_BASE_URL: http://egress-gw:48080
+      BINDING_VERSION: ${BINDING_VERSION:-1}
+      PORT: "8082"
+
+  remote-runtime:
+    build: ./plugins/remote-runtime
+    environment:
+      BINDING_ID: ${BINDING_ID}
+      RUNTIME_AUDIENCE: ${RUNTIME_AUDIENCE}
+      CORE_VERIFICATION_KEYS: ${CORE_VERIFICATION_KEYS}
+      RECEIPT_KEYS: ${RECEIPT_KEYS}
+      RECEIPT_KEY_KID: ${RECEIPT_KEY_KID}
+      RUNTIME_RECEIPT_KEY: ${RUNTIME_RECEIPT_KEY}
+      CORE_BASE_URL: ${CORE_BASE_URL}
+      CORE_SOURCE_AUTH_KEY_ID: ${CORE_SOURCE_AUTH_KEY_ID}
+      CORE_SOURCE_AUTH_SECRET: ${CORE_SOURCE_AUTH_SECRET}
+      CLIENT_CERT_FINGERPRINT: ${CLIENT_CERT_FINGERPRINT}
+      EXECUTOR_BASE_URL: http://egress-gw:48080
+      ATTESTOR_BASE_URL: http://attestor:8082
+      PORT: "8081"
+
+volumes:
+  pgdata:
