@@ -123,7 +123,14 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     },
 
     async completeOn(_client, runId, leaseToken, result) {
-      return this.complete(runId, leaseToken, result);
+      const run = runs.get(runId);
+      if (!run || run.leaseToken !== leaseToken) return false;
+      run.status = "done";
+      run.result = result;
+      run.leaseToken = null;
+      run.leaseExpiresAt = null;
+      run.finishedAt = Date.now();
+      return true;
     },
 
     async fail(runId, leaseToken, error, opts) {
@@ -140,6 +147,12 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       run.leaseToken = null;
       run.leaseExpiresAt = null;
       run.finishedAt = Date.now();
+      return true;
+    },
+
+    async settleRun(runId: string) {
+      const run = runs.get(runId);
+      if (!run) return false;
       settle(run);
       return true;
     },

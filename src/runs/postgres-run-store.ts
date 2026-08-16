@@ -232,11 +232,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         "UPDATE runs SET status='done', result=$1, lease_token=NULL, lease_expires_at=NULL, finished_at=$2 WHERE id=$3 AND lease_token=$4 RETURNING *",
         [JSON.stringify(result), Date.now(), runId, leaseToken],
       );
-      if (rows.length > 0) {
-        settle(rowToRun(rows[0]!));
-        return true;
-      }
-      return false;
+      return rows.length > 0;
     },
 
     async fail(runId, leaseToken, error, opts): Promise<{ requeued: boolean }> {
@@ -250,11 +246,14 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         "UPDATE runs SET status='failed', result=$1, lease_token=NULL, lease_expires_at=NULL, finished_at=$2 WHERE id=$3 AND lease_token=$4 RETURNING *",
         [JSON.stringify({ status: "failed", reply: undefined, reason: error }), Date.now(), runId, leaseToken],
       );
-      if (rows.length > 0) {
-        settle(rowToRun(rows[0]!));
-        return true;
-      }
-      return false;
+      return rows.length > 0;
+    },
+
+    async settleRun(runId: string): Promise<boolean> {
+      const run = await getRun(runId);
+      if (!run) return false;
+      settle(run);
+      return true;
     },
 
     async setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean> {

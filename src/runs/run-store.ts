@@ -74,6 +74,8 @@ export interface RunStore {
 
   failOn(client: import("pg").PoolClient, runId: string, leaseToken: string, error: string): Promise<boolean>;
 
+  settleRun(runId: string): Promise<boolean>;
+
   setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean>;
 
   onTerminal(listener: (run: Run) => void): void;

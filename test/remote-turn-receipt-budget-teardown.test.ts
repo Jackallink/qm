@@ -864,3 +864,57 @@ test("getUsageStatement and getExecutionLeaseHash serve the endpoints", { skip }
   assert.equal(got!.inputTokens, 10);
   assert.equal(got!.statementDigest, "v".repeat(64));
 });
+
+test("terminal listeners observe committed state after completeTeardown (settle-after-commit)", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  await startTurn(prepared);
+  const receiptToken = await prepared.receipt.sign({
+    ...receiptPayload({}, computeInputDigest("hello remote")),
+    remoteTurnId,
+    executionLeaseHash: prepared.executionLeaseHash,
+  });
+  await store.receiveReceipt({ remoteTurnId, receiptToken });
+  const teardown = await store.beginTeardown({ remoteTurnId, trustedUsageUsd: 0.1, invalidMetering: false });
+  assert.equal(teardown, "teardown_pending");
+
+  const observed: Array<string> = [];
+  prepared.runs.onTerminal((run) => observed.push(run.status));
+  const done = await store.completeTeardown({
+    remoteTurnId,
+    evidence: { sandboxDeleted: true, egressRevoked: true, proofDigest: "e".repeat(64) },
+  });
+  assert.equal(done, "completed");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(observed.length, 1, "the terminal listener must fire after commit");
+  assert.equal(observed[0], "done", "the run must be observed as done (committed state)");
+  const run = await prepared.runs.get(prepared.coreRunId);
+  assert.equal(run?.status, "done");
+});
+
+test("reconcile failed settles the run after commit", { skip }, async () => {
+  const prepared = await prepareTurn();
+  const { store, remoteTurnId } = prepared;
+  const observed: Array<string> = [];
+  prepared.runs.onTerminal((run) => observed.push(run.status));
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL! });
+  try {
+    await p.query("UPDATE remote_turn SET status='parked', version=version+1 WHERE id=$1 AND status='claimed'", [
+      remoteTurnId,
+    ]);
+  } finally {
+    await p.end();
+  }
+  const reconciled = await store.reconcile({
+    remoteTurnId,
+    outcome: "failed",
+    evidenceDigest: "f".repeat(64),
+  });
+  assert.equal(reconciled.ok, true);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(observed.length, 1, "the reconciled turn's run must settle after commit");
+  assert.equal(observed[0], "failed");
+  const run = await prepared.runs.get(prepared.coreRunId);
+  assert.equal(run?.status, "failed");
+});

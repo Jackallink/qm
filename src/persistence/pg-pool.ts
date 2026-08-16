@@ -13,15 +13,20 @@ export interface PgPool {
   close(): Promise<void>;
 }
 
-export async function withPgTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function withPgTransaction<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  afterCommit?: () => Promise<void>,
+): Promise<T> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const result = await fn(client);
     await client.query("COMMIT");
+    if (afterCommit) await afterCommit();
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
     client.release();

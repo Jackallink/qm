@@ -286,6 +286,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       );
       const leaseToken = rows[0]?.lease_token ?? null;
       if (leaseToken) await runs.failOn(client, runId, leaseToken, error);
+    }, async () => {
+      await runs.settleRun(runId);
     });
   }
 
@@ -639,6 +641,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   }
 
   async function expirePreClaim(remoteTurnId: string, now: number): Promise<ExpirePreClaimResult> {
+    let settleCoreRunId: string | null = null;
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const { rows } = await client.query<Record<string, unknown>>(
@@ -675,12 +678,16 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         [`remote_turn:${remoteTurnId}`],
       );
       const coreRunId = turn.core_run_id as string;
+      settleCoreRunId = coreRunId;
       await markRunFailedOnClient(client, coreRunId, `remote turn expired pre-dispatch`);
       return "expired";
+    }, async () => {
+      if (settleCoreRunId) await runs.settleRun(settleCoreRunId);
     });
   }
 
   async function expireAdmissions(now: number): Promise<number> {
+    const settledRunIds: string[] = [];
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const { rows } = await client.query<Record<string, unknown>>(
@@ -691,6 +698,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
          FOR UPDATE SKIP LOCKED`,
       );
       for (const turn of rows) {
+        settledRunIds.push(turn.core_run_id as string);
         const remoteTurnId = turn.id as string;
         const coreRunId = turn.core_run_id as string;
         await client.query(
@@ -715,6 +723,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         await markRunFailedOnClient(client, coreRunId, `remote admission deadline expired`);
       }
       return rows.length;
+    }, async () => {
+      for (const runId of settledRunIds) await runs.settleRun(runId);
     });
   }
 
@@ -1016,11 +1026,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       });
       return "parked";
     }
+    let settleRunId: string | null = null;
     const result = await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const turn = await readTurn(client, input.remoteTurnId);
       if (!turn || turn.status !== "teardown_pending") return "not_ready" as const;
       const runId = turn.core_run_id as string;
+      settleRunId = runId;
       const reply = (turn.reply as string | null) ?? "";
       const sessionId = (turn.qm_session_id as string | null) ?? undefined;
       await client.query(
@@ -1049,6 +1061,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         [`remote_turn:${input.remoteTurnId}`],
       );
       return "completed" as const;
+    }, async () => {
+      if (settleRunId) await runs.settleRun(settleRunId);
     });
     return result;
   }
@@ -1147,10 +1161,19 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
   }
 
   async function terminateTurn(input: { remoteTurnId: string; actor: string; evidence: TerminationEvidence }): Promise<AbortResult> {
-    return withPgTransaction(await pool.pool(), async (client) => {
+    let settleRunId: string | null = null;
+    const result = await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
-      return terminateTurnOnClient(client, input.remoteTurnId, input.actor, input.evidence);
+      const outcome = await terminateTurnOnClient(client, input.remoteTurnId, input.actor, input.evidence);
+      if (outcome.ok) {
+        const turn = await readTurn(client, input.remoteTurnId);
+        settleRunId = (turn?.core_run_id as string | null) ?? null;
+      }
+      return outcome;
+    }, async () => {
+      if (settleRunId) await runs.settleRun(settleRunId);
     });
+    return result;
   }
 
   async function renewRemoteLease(remoteTurnId: string): Promise<boolean> {
@@ -1297,6 +1320,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     await withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       await runs.failOn(client, coreRunId, leaseToken, `orphaned remote_once run without an admission`);
+    }, async () => {
+      await runs.settleRun(coreRunId);
     });
     return true;
   }
@@ -1351,11 +1376,13 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     outcome: ReconcileOutcome;
     evidenceDigest: string;
   }): Promise<ReconcileResult> {
+    let settleRunId: string | null = null;
     return withPgTransaction(await pool.pool(), async (client) => {
       guardClientErrors(client);
       const turn = await readTurn(client, input.remoteTurnId);
       if (!turn) return { ok: false as const, reason: "not_found" as const };
       if (turn.status !== "parked") return { ok: false as const, reason: "not_reconciliable" as const };
+      settleRunId = turn.core_run_id as string;
       const event: RemoteTurnEvent =
         input.outcome === "completed"
           ? "reconcile_completed"
@@ -1392,6 +1419,8 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         await failRemoteRunOnClient(client, turn.core_run_id as string, `reconciled ${input.outcome}`);
       }
       return { ok: true as const, outcome: input.outcome };
+    }, async () => {
+      if (settleRunId) await runs.settleRun(settleRunId);
     });
   }
 
