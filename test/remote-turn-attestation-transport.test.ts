@@ -321,3 +321,102 @@ test("verifyStartProof rejects a payload attestorKid that differs from the heade
   });
   assert.equal(claims, null);
 });
+
+function usageStatementPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    artifact: "usage_statement",
+    schemaVersion: 1,
+    remoteTurnId: UUID,
+    executionLeaseHash: HASH64,
+    workloadIdentity: "wli",
+    endpoint: "https://api.deepseek.com/v1/chat/completions",
+    usage: { inputTokens: 120, outputTokens: 40 },
+    costUsd: 0.0012,
+    timestamp: 1_799_999_000,
+    kid: "attestor-k1",
+    ...overrides,
+  };
+}
+
+test("verifyUsageStatement accepts a valid metering-signed usage statement", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(usageStatementPayload());
+  const claims = await verifier.verifyUsageStatement(jws, {
+    meteringKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.ok(claims);
+  assert.equal(claims.artifact, "usage_statement");
+  assert.equal(claims.usage.inputTokens, 120);
+  assert.equal(claims.usage.outputTokens, 40);
+  assert.equal(claims.endpoint, "https://api.deepseek.com/v1/chat/completions");
+});
+
+test("verifyUsageStatement rejects a tampered signature", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(usageStatementPayload());
+  const forged = `${jws.slice(0, -4)}AAAA`;
+  const claims = await verifier.verifyUsageStatement(forged, {
+    meteringKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyUsageStatement rejects a statement bound to a different lease", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(usageStatementPayload());
+  const claims = await verifier.verifyUsageStatement(jws, {
+    meteringKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: "f".repeat(64) },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyUsageStatement rejects wrong-lease turn id", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(usageStatementPayload());
+  const claims = await verifier.verifyUsageStatement(jws, {
+    meteringKeySet: fixture.keySet,
+    expected: { remoteTurnId: "00000000-0000-4000-8000-000000000000", executionLeaseHash: HASH64 },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyUsageStatement rejects a metering key outside the pinned set", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const other = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await other.sign(usageStatementPayload());
+  const claims = await verifier.verifyUsageStatement(jws, {
+    meteringKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyUsageStatement rejects unknown fields, negative tokens, and malformed uri", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  for (const bad of [
+    usageStatementPayload({ extraField: true }),
+    usageStatementPayload({ usage: { inputTokens: -1, outputTokens: 0 } }),
+    usageStatementPayload({ usage: { inputTokens: 0 } }),
+    usageStatementPayload({ endpoint: "not-a-uri" }),
+    usageStatementPayload({ costUsd: -0.01 }),
+    usageStatementPayload({ artifact: "receipt" }),
+    usageStatementPayload({ schemaVersion: 0 }),
+    usageStatementPayload({ kid: "some-other-kid" }),
+  ]) {
+    const jws = await fixture.sign(bad);
+    const claims = await verifier.verifyUsageStatement(jws, {
+      meteringKeySet: fixture.keySet,
+      expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+    });
+    assert.equal(claims, null, `expected rejection for ${JSON.stringify(bad).slice(0, 80)}`);
+  }
+});

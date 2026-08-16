@@ -60,6 +60,24 @@ export interface StartProofExpected {
   turnJtiHash: string;
 }
 
+export interface UsageStatementClaims {
+  artifact: "usage_statement";
+  schemaVersion: number;
+  remoteTurnId: string;
+  executionLeaseHash: string;
+  workloadIdentity: string;
+  endpoint: string;
+  usage: { inputTokens: number; outputTokens: number };
+  costUsd: number;
+  timestamp: number;
+  kid: string;
+}
+
+export interface UsageStatementExpected {
+  remoteTurnId: string;
+  executionLeaseHash: string;
+}
+
 interface AttestationVerifier {
   attestationKeySet: KeySetEntry[];
   expected: PreClaimExpected;
@@ -262,6 +280,35 @@ function startProofExpectedMatches(claims: StartProofClaims, expected: StartProo
   );
 }
 
+const USAGE_FIELDS = new Set([
+  "artifact", "schemaVersion", "remoteTurnId", "executionLeaseHash", "workloadIdentity",
+  "endpoint", "usage", "costUsd", "timestamp", "kid",
+]);
+
+function validateUsageStatementClaims(value: unknown): UsageStatementClaims | null {
+  if (!isRecord(value)) return null;
+  if (Object.keys(value).some((key) => !USAGE_FIELDS.has(key))) return null;
+  if (value.artifact !== "usage_statement") return null;
+  if (!isInteger(value.schemaVersion) || value.schemaVersion < 1) return null;
+  if (!isString(value.remoteTurnId) || !matches(value.remoteTurnId, UUID_PATTERN)) return null;
+  if (!isString(value.executionLeaseHash) || !matches(value.executionLeaseHash, SHA256_PATTERN)) return null;
+  if (!isString(value.workloadIdentity) || value.workloadIdentity.length === 0) return null;
+  if (!isString(value.endpoint) || !isHttpUri(value.endpoint)) return null;
+  const usage = value.usage;
+  if (!isRecord(usage)) return null;
+  if (Object.keys(usage).some((key) => key !== "inputTokens" && key !== "outputTokens")) return null;
+  if (!isInteger(usage.inputTokens) || usage.inputTokens < 0) return null;
+  if (!isInteger(usage.outputTokens) || usage.outputTokens < 0) return null;
+  if (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd) || value.costUsd < 0) return null;
+  if (!isInteger(value.timestamp) || value.timestamp < 0) return null;
+  if (!isString(value.kid) || value.kid.length === 0) return null;
+  return value as unknown as UsageStatementClaims;
+}
+
+function usageStatementExpectedMatches(claims: UsageStatementClaims, expected: UsageStatementExpected): boolean {
+  return claims.remoteTurnId === expected.remoteTurnId && claims.executionLeaseHash === expected.executionLeaseHash;
+}
+
 export interface AttestationVerifierOptions {
   now?: () => number;
 }
@@ -272,6 +319,10 @@ export function createAttestationVerifier(opts: AttestationVerifierOptions = {})
     jws: string,
     input: { attestationKeySet: KeySetEntry[]; expected: StartProofExpected },
   ) => Promise<StartProofClaims | null>;
+  verifyUsageStatement: (
+    jws: string,
+    input: { meteringKeySet: KeySetEntry[]; expected: UsageStatementExpected },
+  ) => Promise<UsageStatementClaims | null>;
 } {
   const now = opts.now ?? Date.now;
   const cache: KeyCache = new Map();
@@ -290,6 +341,15 @@ export function createAttestationVerifier(opts: AttestationVerifierOptions = {})
       if (!claims) return null;
       if (claims.attestorKid !== verified.headerKid) return null;
       if (!startProofExpectedMatches(claims, input.expected)) return null;
+      return claims;
+    },
+    async verifyUsageStatement(jws, input): Promise<UsageStatementClaims | null> {
+      const verified = await verifyAttestationJws(jws, input.meteringKeySet, now(), cache);
+      if (!verified) return null;
+      const claims = validateUsageStatementClaims(verified.payload);
+      if (!claims) return null;
+      if (claims.kid !== verified.headerKid) return null;
+      if (!usageStatementExpectedMatches(claims, input.expected)) return null;
       return claims;
     },
   };
