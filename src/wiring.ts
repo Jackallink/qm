@@ -806,7 +806,10 @@ export function buildApp(
               env: {
                 DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "",
               },
-              systemPrompt: "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
+              systemPrompt: (scope: string) =>
+                configStore.getSoul(scope) ??
+                configStore.getSoul(`org:${config.orgId}`) ??
+                "You are QM's prime execution engine. Help the organization get work done. Be concise, accurate, and respect data boundaries.",
               resolveApprovalGrant: async (scope, sessionId, approvalKey) => {
                 const grants = await approvalGrants.all();
                 return grants.some((g) => {

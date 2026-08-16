@@ -36,8 +36,10 @@ export interface PrimeHarnessOptions {
   resolveProviderModel?: (scope: ScopeId) => { provider?: string; model?: string };
   /** Per-scope session dirs live under this base. */
   sessionDirBase?: string;
-  /** Base org system prompt (soul). Injected at spawn. */
-  systemPrompt?: string;
+  /** Base org system prompt (soul). Injected at spawn; a function is
+   * resolved per scope at spawn time (lazy client start), so soul changes
+   * take effect on the next client (re)creation. */
+  systemPrompt?: string | ((scope: ScopeId) => string | undefined);
   /** Context token budget reported to QM. Defaults to 200_000. */
   contextTokenBudget?: number;
   /** Reset (new_session) on harness switch, clearing IPython state. Default true. */
@@ -119,7 +121,7 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
       provider,
       model,
       sessionDir: sessionDirFor(scope),
-      systemPrompt: opts.systemPrompt,
+      systemPrompt: typeof opts.systemPrompt === "function" ? opts.systemPrompt(scope) : opts.systemPrompt,
       args: opts.args,
       env: {
         ...opts.env,
@@ -149,7 +151,8 @@ export function createPrimeHarness(opts: PrimeHarnessOptions = {}): Harness {
     args.push("--session-dir", sessionDir);
     args.push("--continue");
     args.push("--extension", "/opt/prime-agent/extensions/permission-gate.mjs");
-    if (opts.systemPrompt) args.push("--system-prompt", opts.systemPrompt);
+    const systemPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt(scope) : opts.systemPrompt;
+    if (systemPrompt) args.push("--system-prompt", systemPrompt);
     if (opts.args) args.push(...opts.args);
     return `node ${shellQuote(cliPath)} ${args.map((a) => (a.startsWith("-") ? a : shellQuote(a))).join(" ")}`;
   };
