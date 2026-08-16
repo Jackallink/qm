@@ -25,7 +25,7 @@ export interface DockerClient {
   removeVolume(name: string): Promise<void>;
   inspectContainer(name: string): Promise<DockerContainerInfo | null>;
   listContainersByLabel(label: string): Promise<DockerContainerInfo[]>;
-  writeFileInContainer(containerId: string, path: string, content: string): Promise<void>;
+  writeFileIntoContainer(containerId: string, path: string, content: string): Promise<void>;
 }
 
 export function createDockerClient(opts: {
@@ -93,8 +93,12 @@ export function createDockerClient(opts: {
       }
       return out;
     },
-    async writeFileInContainer(containerId, path, content) {
-      await run(`docker exec ${shellQuote(containerId)} sh -c ${shellQuote(`mkdir -p $(dirname ${path}) && cat > ${path}`)} <<'EOF'\n${content}\nEOF`);
+    async writeFileIntoContainer(containerId, path, content) {
+      const tmp = `/tmp/rt-token-${Date.now()}`;
+      await run(`printf %s ${shellQuote(content)} > ${shellQuote(tmp)}`);
+      await run(`docker cp ${shellQuote(tmp)} ${shellQuote(containerId)}:${shellQuote(path)}`).finally(() => {
+        void exec(`rm -f ${shellQuote(tmp)}`);
+      });
     },
   };
 }

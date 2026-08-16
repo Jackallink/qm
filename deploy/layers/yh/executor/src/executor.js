@@ -19,21 +19,6 @@ const MAX_INPUT_BYTES = 32 * 1024;
 const MAX_OUTPUT_BYTES = 16 * 1024;
 const MAX_RUNTIME_MS = 60_000;
 
-function usageFromBody(body) {
-  const usage = body?.usage;
-  if (usage && typeof usage === "object") {
-    return {
-      inputTokens: Number.isInteger(usage.prompt_tokens) ? usage.prompt_tokens : 0,
-      outputTokens: Number.isInteger(usage.completion_tokens) ? usage.completion_tokens : 0,
-    };
-  }
-  return null;
-}
-
-function estimateCost(inputTokens, outputTokens) {
-  return (inputTokens / 1_000_000) * 0.27 + (outputTokens / 1_000_000) * 1.1;
-}
-
 createServer(async (req, res) => {
   if (req.method !== "POST" || req.url !== "/execute") {
     res.writeHead(404, { "content-type": "application/json" });
@@ -74,55 +59,35 @@ createServer(async (req, res) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MAX_RUNTIME_MS);
   try {
-    const authRes = await fetch(`${EGRESS_URL}/authorize`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token, url: MODEL_ENDPOINT }),
-    });
-    const authBody = await authRes.json();
-    if (!authBody.allowed) {
-      res.writeHead(403, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "egress_denied", reason: authBody.reason }));
-      return;
-    }
-    const modelRes = await fetch(MODEL_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ model: MODEL_NAME, messages }),
-      signal: controller.signal,
-    });
-    if (!modelRes.ok) {
-      res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "model_error", status: modelRes.status }));
-      return;
-    }
-    const modelBody = await modelRes.json();
-    const reply = modelBody?.choices?.[0]?.message?.content ?? "";
-    if (!reply || Buffer.byteLength(reply, "utf8") > MAX_OUTPUT_BYTES) {
-      res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "reply_out_of_bounds" }));
-      return;
-    }
-    const usage = usageFromBody(modelBody);
-    const inputTokens = usage?.inputTokens ?? Math.ceil(Buffer.byteLength(text, "utf8") / 4);
-    const outputTokens = usage?.outputTokens ?? Math.ceil(Buffer.byteLength(reply, "utf8") / 4);
-    await fetch(`${EGRESS_URL}/usage`, {
+    const forwardRes = await fetch(`${EGRESS_URL}/forward`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         token,
         url: MODEL_ENDPOINT,
-        usage: { inputTokens, outputTokens, costUsd: estimateCost(inputTokens, outputTokens) },
+        headers: { "content-type": "application/json" },
+        payload: { model: MODEL_NAME, messages },
       }),
+      signal: controller.signal,
     });
+    const forwardBody = await forwardRes.json();
+    if (!forwardBody.body || forwardBody.body.error) {
+      const reason = forwardBody.reason ?? forwardBody.body?.error ?? "forward failed";
+      res.writeHead(forwardRes.status === 200 ? 502 : forwardRes.status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: reason }));
+      return;
+    }
+    const reply = forwardBody.body.choices?.[0]?.message?.content ?? "";
+    if (!reply || Buffer.byteLength(reply, "utf8") > MAX_OUTPUT_BYTES) {
+      res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "reply_out_of_bounds" }));
+      return;
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ reply, runtimeMs: Date.now() - startedAt }));
   } catch {
     res.writeHead(502, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "model_unreachable" }));
+    res.end(JSON.stringify({ error: "egress_unreachable" }));
   } finally {
     clearTimeout(timer);
   }

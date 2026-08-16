@@ -50,7 +50,7 @@ function fakeDocker(): FakeDocker {
       return c ? { id: name, name, state: c.state } : null;
     },
     listContainersByLabel: async () => [],
-    writeFileInContainer: async (id, path, content) => {
+    writeFileIntoContainer: async (id, path, content) => {
       const c = state.containers.get(id);
       if (c) c.files.set(path, content);
     },

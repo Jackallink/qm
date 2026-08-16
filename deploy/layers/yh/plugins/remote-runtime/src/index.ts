@@ -226,6 +226,8 @@ export interface RuntimeHandlers {
   config: RuntimeConfig;
 }
 
+const abortTokens = new Map<string, string>();
+
 export async function handleTurn(
   handlers: RuntimeHandlers,
   body: unknown,
@@ -256,6 +258,7 @@ export async function handleTurn(
     envelopeDigest: envelope.envelopeDigest,
   });
   if (!claim.ok) return { status: claim.status, body: { error: "claim_refused", reason: claim.reason } };
+  abortTokens.set(envelope.remoteTurnId, claim.abortToken);
   const executed = await handlers.executor.runTurn({
     remoteTurnId: envelope.remoteTurnId,
     text: envelope.text,
@@ -311,13 +314,20 @@ export function createRuntimeServer(handlers: RuntimeHandlers): ReturnType<typeo
     } else if (req.method === "POST" && url.pathname === "/abort") {
       const envelope = isRecord(body) ? body : {};
       const remoteTurnId = isString(envelope.remoteTurnId) ? envelope.remoteTurnId : "";
-      if (!remoteTurnId) {
-        out = { status: 400, body: { error: "bad_request", message: "remoteTurnId required" } };
+      const abortToken = isString(envelope.abortToken) ? envelope.abortToken : "";
+      if (!remoteTurnId || !abortToken) {
+        out = { status: 400, body: { error: "bad_request", message: "remoteTurnId and abortToken required" } };
       } else {
-        const abortOk = await handlers.attestor.signalTerminate(remoteTurnId);
-        out = abortOk
-          ? { status: 200, body: { status: "abort_acknowledged" } }
-          : { status: 502, body: { error: "abort_failed" } };
+        const known = abortTokens.get(remoteTurnId);
+        if (known !== abortToken) {
+          out = { status: 401, body: { error: "unauthorized", message: "abort token does not match" } };
+        } else {
+          const abortOk = await handlers.attestor.signalTerminate(remoteTurnId);
+          abortTokens.delete(remoteTurnId);
+          out = abortOk
+            ? { status: 200, body: { status: "abort_acknowledged" } }
+            : { status: 502, body: { error: "abort_failed" } };
+        }
       }
     } else {
       out = { status: 404, body: { error: "not_found" } };

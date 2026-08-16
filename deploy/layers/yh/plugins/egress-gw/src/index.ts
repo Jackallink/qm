@@ -61,6 +61,9 @@ export interface EgressConfig {
   store: EgressTokenStore;
   now?: () => number;
   tokenTtlMs: number;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
+  fetchImpl?: typeof fetch;
 }
 
 export interface EgressHandlers {
@@ -79,6 +82,15 @@ export interface EgressHandlers {
   }): Promise<void>;
   usageStatement(input: { executionLeaseHash: string }): Promise<
     { ok: true; statement: string } | { ok: false; reason: string }
+  >;
+  forward(input: {
+    token: string;
+    url: string;
+    headers: Record<string, string>;
+    body: unknown;
+  }): Promise<
+    | { ok: true; status: number; body: unknown; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }
+    | { ok: false; reason: string }
   >;
 }
 
@@ -149,6 +161,9 @@ export function createEgressGateway(config: EgressConfig): EgressHandlers {
       if (!payload.tokenId) return;
       await config.store.addUsage(payload.tokenId, input.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 });
     },
+    async forward(input) {
+      return forward(input);
+    },
     async usageStatement(input) {
       const record = await config.store.getByLease(input.executionLeaseHash);
       if (!record) return { ok: false, reason: "no token for lease" };
@@ -171,6 +186,40 @@ export function createEgressGateway(config: EgressConfig): EgressHandlers {
     },
   };
 }
+
+  async function forward(input: {
+    token: string;
+    url: string;
+    headers: Record<string, string>;
+    body: unknown;
+  }): Promise<ReturnType<EgressHandlers["forward"]>> {
+    const authorized = await authorize(input);
+    if (!authorized.ok) return { ok: false, reason: authorized.reason };
+    if (!config.providerApiKey) return { ok: false, reason: "provider credential not configured" };
+    const fetchImpl = config.fetchImpl ?? fetch;
+    const headers: Record<string, string> = { ...input.headers, authorization: `Bearer ${config.providerApiKey}` };
+    try {
+      const res = await fetchImpl(input.url, { method: "POST", headers, body: JSON.stringify(input.body) });
+      const text = await res.text();
+      let parsed: unknown;
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = { raw: text };
+      }
+      let usage: { inputTokens: number; outputTokens: number; costUsd: number } | undefined;
+      const usageField = (parsed as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage;
+      if (usageField && typeof usageField === "object") {
+        const inputTokens = usageField.prompt_tokens ?? 0;
+        const outputTokens = usageField.completion_tokens ?? 0;
+        usage = { inputTokens, outputTokens, costUsd: (inputTokens / 1_000_000) * 0.27 + (outputTokens / 1_000_000) * 1.1 };
+      }
+      await recordUsage({ token: input.token, url: input.url, usage });
+      return { ok: true, status: res.status, body: parsed, usage };
+    } catch {
+      return { ok: false, reason: "upstream unreachable" };
+    }
+  }
 
 export function createEgressServer(handlers: EgressHandlers): ReturnType<typeof createServer> {
   return createServer(async (req, res) => {
@@ -214,6 +263,16 @@ export function createEgressServer(handlers: EgressHandlers): ReturnType<typeof 
         usage: body.usage as { inputTokens: number; outputTokens: number; costUsd: number } | undefined,
       });
       out = { status: 200, body: { recorded: true } };
+    } else if (req.method === "POST" && url.pathname === "/forward") {
+      const result = await handlers.forward({
+        token: typeof body.token === "string" ? body.token : "",
+        url: typeof body.url === "string" ? body.url : "",
+        headers: typeof body.headers === "object" && body.headers !== null ? (body.headers as Record<string, string>) : {},
+        body: body.payload,
+      });
+      out = result.ok
+        ? { status: 200, body: { status: result.status, body: result.body, usage: result.usage } }
+        : { status: 403, body: { error: "forward_refused", reason: result.reason } };
     } else if (req.method === "POST" && url.pathname === "/usage-statement") {
       const result = await handlers.usageStatement({
         executionLeaseHash: typeof body.executionLeaseHash === "string" ? body.executionLeaseHash : "",

@@ -192,7 +192,7 @@ async function verifySigned(
   }
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
-  if (record.kid !== header.kid) return null;
+  if (record.kid !== undefined && record.kid !== header.kid) return null;
   return { payload: record, headerKid: header.kid };
 }
 
@@ -222,7 +222,7 @@ function matches(value: string, pattern: string): boolean {
 export interface TurnTokenVerifyInput {
   aud: string;
   remoteTurnId: string;
-  envelopeDigest: string;
+  envelopeDigest?: string;
   nowMs: number;
 }
 
@@ -247,7 +247,10 @@ export async function verifyTurnToken(
   }
   if (typeof c.iat !== "number" || typeof c.nbf !== "number" || typeof c.exp !== "number") return null;
   if (!timeValid(c as unknown as { iat: number; nbf: number; exp: number }, input.nowMs)) return null;
-  if (c.aud !== input.aud || c.remoteTurnId !== input.remoteTurnId || c.envelopeDigest !== input.envelopeDigest) {
+  if (c.aud !== input.aud || c.remoteTurnId !== input.remoteTurnId) {
+    return null;
+  }
+  if (input.envelopeDigest !== undefined && c.envelopeDigest !== input.envelopeDigest) {
     return null;
   }
   return c as unknown as TurnClaims;
@@ -355,9 +358,8 @@ export async function signArtifact(
   payload: Record<string, unknown>,
   key: { kid: string; privateKeyPem: string },
 ): Promise<string> {
-  const withKid = { ...payload, kid: key.kid };
   const signingKey = await importPKCS8(key.privateKeyPem, "EdDSA");
-  return new CompactSign(new TextEncoder().encode(JSON.stringify(withKid)))
+  return new CompactSign(new TextEncoder().encode(JSON.stringify(payload)))
     .setProtectedHeader({ alg: "EdDSA", kid: key.kid })
     .sign(signingKey);
 }

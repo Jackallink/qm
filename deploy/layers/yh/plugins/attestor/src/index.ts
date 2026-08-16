@@ -51,6 +51,7 @@ export interface PreClaimRecord {
   status: "pending" | "started" | "terminated" | "reaped";
   executionLeaseHash?: string;
   egressTokenId?: string;
+  terminationProofDigest?: string;
 }
 
 export interface AttestorStore {
@@ -213,7 +214,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
       });
       if (!minted.ok) return { ok: false, reason: `egress mint failed: ${minted.reason}` };
       try {
-        await config.docker.writeFileInContainer(record.containerName, "/run/remote-turn/token/token", minted.token);
+        await config.docker.writeFileIntoContainer(record.containerName, "/run/remote-turn/token/token", minted.token);
         await config.docker.startContainer(record.containerName);
       } catch (error) {
         await config.egressGateway.revokeToken(minted.tokenId).catch(() => undefined);
@@ -239,6 +240,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           networkPolicyId: config.networkPolicyId,
           egressTokenId: minted.tokenId,
           startTime: nowSec,
+          attestorKid: config.attestorKey.kid,
         },
         config.attestorKey,
       );
@@ -256,7 +258,6 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
       await config.docker.stopAndRemoveContainer(record.containerName).catch(() => undefined);
       await config.docker.removeNetwork(record.networkName).catch(() => undefined);
       await config.docker.removeVolume(record.volumeName).catch(() => undefined);
-      await config.store.updatePreClaim(input.remoteTurnId, { status: "terminated" });
       const nowSec = Math.floor(now() / 1000);
       const terminationProof = await signArtifact(
         {
@@ -269,10 +270,13 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           egressRevocationAck: egressRevoked,
           egressTokenId: record.egressTokenId ?? "",
           timestamp: nowSec,
+          attestorKid: config.attestorKey.kid,
         },
         config.attestorKey,
       );
       if (!egressRevoked) return { ok: false, reason: "egress revocation was not acknowledged" };
+      const terminationProofDigest = sha256Hex(terminationProof);
+      await config.store.updatePreClaim(input.remoteTurnId, { status: "terminated", terminationProofDigest });
       return { ok: true, terminationProof };
     },
 
@@ -286,7 +290,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
         startProofSeen: record.status === "started",
         terminationSeen: record.status === "terminated",
         egressRevoked: record.status === "terminated",
-        terminationProofDigest: null,
+        terminationProofDigest: record.terminationProofDigest ?? null,
       };
     },
 
