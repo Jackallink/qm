@@ -257,6 +257,7 @@ interface LocalSandboxEnv {
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
+  egressGatewayContainer?: string;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
@@ -272,6 +273,7 @@ function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
     ...(numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) !== undefined
       ? { defaultTimeoutSec: numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) }
       : {}),
+    ...(env.LOCAL_SANDBOX_EGRESS_GATEWAY ? { egressGatewayContainer: env.LOCAL_SANDBOX_EGRESS_GATEWAY } : {}),
   };
 }
 
@@ -292,6 +294,7 @@ function spritesSandboxEnv(env: NodeJS.ProcessEnv): SpritesSandboxEnv {
     ...(numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) !== undefined
       ? { defaultTimeoutSec: numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) }
       : {}),
+    ...(env.LOCAL_SANDBOX_EGRESS_GATEWAY ? { egressGatewayContainer: env.LOCAL_SANDBOX_EGRESS_GATEWAY } : {}),
   };
 }
 

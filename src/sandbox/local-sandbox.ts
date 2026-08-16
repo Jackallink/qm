@@ -40,6 +40,10 @@ export type { DockerExec };
 
 export interface LocalSandboxOptions {
   image?: string;
+  /** When set, per-scope networks are created internal (no outbound route)
+   * and this gateway container joins them — the sandbox's only network
+   * peer is the gateway (egress enforcement shape, mirrors remote-turn). */
+  egressGatewayContainer?: string;
   dockerBin?: string;
   cpus?: number;
   memoryMb?: number;
@@ -228,9 +232,15 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   async function ensureNetwork(name: string): Promise<string> {
     const net = localNetworkName(name);
     if ((await dexec(["network", "inspect", net])).code !== 0) {
-      const r = await dexec(["network", "create", net]);
+      const createArgs = ["network", "create"];
+      if (opts.egressGatewayContainer) createArgs.push("--internal");
+      createArgs.push(net);
+      const r = await dexec(createArgs);
       if (r.code !== 0 && !/already exists/i.test(r.stderr)) {
         throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
+      }
+      if (opts.egressGatewayContainer) {
+        await dexec(["network", "connect", net, opts.egressGatewayContainer]).catch(() => undefined);
       }
     }
     return net;
