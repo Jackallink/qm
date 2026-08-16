@@ -78,6 +78,24 @@ export interface UsageStatementExpected {
   executionLeaseHash: string;
 }
 
+export interface TerminationProofClaims {
+  artifact: "termination_proof";
+  schemaVersion: number;
+  remoteTurnId: string;
+  executionLeaseHash: string;
+  sandboxId: string;
+  exitResult: "deleted";
+  egressRevocationAck: true;
+  egressTokenId: string;
+  timestamp: number;
+  attestorKid: string;
+}
+
+export interface TerminationProofExpected {
+  remoteTurnId: string;
+  executionLeaseHash: string;
+}
+
 interface AttestationVerifier {
   attestationKeySet: KeySetEntry[];
   expected: PreClaimExpected;
@@ -309,6 +327,31 @@ function usageStatementExpectedMatches(claims: UsageStatementClaims, expected: U
   return claims.remoteTurnId === expected.remoteTurnId && claims.executionLeaseHash === expected.executionLeaseHash;
 }
 
+const TERMINATION_FIELDS = new Set([
+  "artifact", "schemaVersion", "remoteTurnId", "executionLeaseHash", "sandboxId",
+  "exitResult", "egressRevocationAck", "egressTokenId", "timestamp", "attestorKid",
+]);
+
+function validateTerminationProofClaims(value: unknown): TerminationProofClaims | null {
+  if (!isRecord(value)) return null;
+  if (Object.keys(value).some((key) => !TERMINATION_FIELDS.has(key))) return null;
+  if (value.artifact !== "termination_proof") return null;
+  if (!isInteger(value.schemaVersion) || value.schemaVersion < 1) return null;
+  if (!isString(value.remoteTurnId) || !matches(value.remoteTurnId, UUID_PATTERN)) return null;
+  if (!isString(value.executionLeaseHash) || !matches(value.executionLeaseHash, SHA256_PATTERN)) return null;
+  if (!isString(value.sandboxId) || value.sandboxId.length === 0) return null;
+  if (value.exitResult !== "deleted") return null;
+  if (value.egressRevocationAck !== true) return null;
+  if (!isString(value.egressTokenId) || value.egressTokenId.length === 0) return null;
+  if (!isInteger(value.timestamp) || value.timestamp < 0) return null;
+  if (!isString(value.attestorKid) || value.attestorKid.length === 0) return null;
+  return value as unknown as TerminationProofClaims;
+}
+
+function terminationProofExpectedMatches(claims: TerminationProofClaims, expected: TerminationProofExpected): boolean {
+  return claims.remoteTurnId === expected.remoteTurnId && claims.executionLeaseHash === expected.executionLeaseHash;
+}
+
 export interface AttestationVerifierOptions {
   now?: () => number;
 }
@@ -323,6 +366,10 @@ export function createAttestationVerifier(opts: AttestationVerifierOptions = {})
     jws: string,
     input: { meteringKeySet: KeySetEntry[]; expected: UsageStatementExpected },
   ) => Promise<UsageStatementClaims | null>;
+  verifyTerminationProof: (
+    jws: string,
+    input: { attestationKeySet: KeySetEntry[]; expected: TerminationProofExpected },
+  ) => Promise<TerminationProofClaims | null>;
 } {
   const now = opts.now ?? Date.now;
   const cache: KeyCache = new Map();
@@ -350,6 +397,15 @@ export function createAttestationVerifier(opts: AttestationVerifierOptions = {})
       if (!claims) return null;
       if (claims.kid !== verified.headerKid) return null;
       if (!usageStatementExpectedMatches(claims, input.expected)) return null;
+      return claims;
+    },
+    async verifyTerminationProof(jws, input): Promise<TerminationProofClaims | null> {
+      const verified = await verifyAttestationJws(jws, input.attestationKeySet, now(), cache);
+      if (!verified) return null;
+      const claims = validateTerminationProofClaims(verified.payload);
+      if (!claims) return null;
+      if (claims.attestorKid !== verified.headerKid) return null;
+      if (!terminationProofExpectedMatches(claims, input.expected)) return null;
       return claims;
     },
   };

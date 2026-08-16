@@ -420,3 +420,98 @@ test("verifyUsageStatement rejects unknown fields, negative tokens, and malforme
     assert.equal(claims, null, `expected rejection for ${JSON.stringify(bad).slice(0, 80)}`);
   }
 });
+
+function terminationProofPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    artifact: "termination_proof",
+    schemaVersion: 1,
+    remoteTurnId: UUID,
+    executionLeaseHash: HASH64,
+    sandboxId: "sandbox-1",
+    exitResult: "deleted",
+    egressRevocationAck: true,
+    egressTokenId: "egt-1",
+    timestamp: 1_799_999_000,
+    attestorKid: "attestor-k1",
+    ...overrides,
+  };
+}
+
+test("verifyTerminationProof accepts a valid attestor-signed termination proof", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(terminationProofPayload());
+  const claims = await verifier.verifyTerminationProof(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.ok(claims);
+  assert.equal(claims.artifact, "termination_proof");
+  assert.equal(claims.exitResult, "deleted");
+  assert.equal(claims.egressRevocationAck, true);
+  assert.equal(claims.egressTokenId, "egt-1");
+});
+
+test("verifyTerminationProof rejects without egress revocation ack", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(terminationProofPayload({ egressRevocationAck: false }));
+  const claims = await verifier.verifyTerminationProof(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyTerminationProof rejects non-deleted exit result", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(terminationProofPayload({ exitResult: "running" }));
+  const claims = await verifier.verifyTerminationProof(jws, {
+    attestationKeySet: fixture.keySet,
+    expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+  });
+  assert.equal(claims, null);
+});
+
+test("verifyTerminationProof rejects mismatched lease or turn and unknown fields", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  for (const bad of [
+    terminationProofPayload({ executionLeaseHash: "f".repeat(64) }),
+    terminationProofPayload({ remoteTurnId: "00000000-0000-4000-8000-000000000000" }),
+    terminationProofPayload({ extraField: 1 }),
+    terminationProofPayload({ attestorKid: "other-kid" }),
+    terminationProofPayload({ schemaVersion: 0 }),
+  ]) {
+    const jws = await fixture.sign(bad);
+    const claims = await verifier.verifyTerminationProof(jws, {
+      attestationKeySet: fixture.keySet,
+      expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+    });
+    assert.equal(claims, null, `expected rejection for ${JSON.stringify(bad).slice(0, 80)}`);
+  }
+});
+
+test("verifyTerminationProof rejects a forged signature and a key outside the pinned set", async () => {
+  const fixture = await makeAttestor(() => 1_799_999_000);
+  const other = await makeAttestor(() => 1_799_999_000);
+  const verifier = createAttestationVerifier({ now: fixture.now });
+  const jws = await fixture.sign(terminationProofPayload());
+  const forged = `${jws.slice(0, -4)}AAAA`;
+  assert.equal(
+    await verifier.verifyTerminationProof(forged, {
+      attestationKeySet: fixture.keySet,
+      expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+    }),
+    null,
+  );
+  const otherJws = await other.sign(terminationProofPayload());
+  assert.equal(
+    await verifier.verifyTerminationProof(otherJws, {
+      attestationKeySet: fixture.keySet,
+      expected: { remoteTurnId: UUID, executionLeaseHash: HASH64 },
+    }),
+    null,
+  );
+});
