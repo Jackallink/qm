@@ -35,6 +35,10 @@ const server = createServer(built.app, {
   ...(built.remoteTurnG0Verifier ? { remoteTurnG0Verifier: built.remoteTurnG0Verifier } : {}),
   ...(built.remoteTurnTurnVerifier ? { remoteTurnTurnVerifier: built.remoteTurnTurnVerifier } : {}),
   ...(built.remoteTurnAttestorClient ? { remoteTurnAttestorClient: built.remoteTurnAttestorClient } : {}),
+  agentRegistry: built.agentRegistry,
+  sopStore: built.sopStore,
+  messengerStore: built.messengerStore,
+  schedulerStore: built.schedulerStore,
   baseModelDefault: defaultModelForHarness(
     config.harness,
     configuredModelForHarness(config, config.harness),
