@@ -8,6 +8,12 @@ only the rows marked `DEPLOY-GATE` there. Until every required row has a
 recorded result, the deployment is not a target-host acceptance and no
 production Remote Turn binding or canary may be enabled.
 
+Profile revision (2026-08-30): per precondition 4, the declared host shape
+is this machine (macOS arm64 + Docker Desktop engine 28.3.0), revised in
+`d0t-coverage.md` and spec §1.1 from the earlier "customer's private host,
+x86_64 Linux" wording. The single-host Docker + pinned PostgreSQL profile,
+boundaries, and requirements are unchanged.
+
 ## Preconditions
 
 1. Start from a fresh checkout of the approved private release and record its

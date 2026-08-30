@@ -1,10 +1,20 @@
 # D0-T coverage table — yh layer
 
-Target profile: **single-host Docker** (docker-compose) on the customer's
-private host, PostgreSQL in a pinned container on the same host. Declared in
-`docs/specs/remote-turn-v1/08-gate3-runtime-spec.md` §1.1. Per the roadmap
-D0-T exit gate (`docs/specs/agent-platform-roadmap-v1/03-gates-and-evidence.md`),
-every numbered requirement must have an ownership and acceptance path.
+Target profile: **single-host Docker** (docker-compose) on the declared D0-T
+target host: this machine (macOS arm64, Darwin 24.6.0, Docker Desktop engine
+28.3.0, Linux container platform), PostgreSQL in a pinned container on the
+same host. Declared in `docs/specs/remote-turn-v1/08-gate3-runtime-spec.md`
+§1.1. Per the roadmap D0-T exit gate
+(`docs/specs/agent-platform-roadmap-v1/03-gates-and-evidence.md`), every
+numbered requirement must have an ownership and acceptance path.
+
+Profile revision note (2026-08-30): per the D0-T acceptance checklist
+precondition 4, the host shape declared earlier as "customer's private
+host, x86_64 Linux" is revised to the actual target host: this machine,
+macOS arm64 + Docker Desktop (engine 28.3.0). Scope: host shape only; the
+single-host Docker + pinned PostgreSQL container profile, boundaries, and
+every A/B requirement row stand unchanged. An acceptance record from this
+profile proves only this host shape.
 
 Closure model (agent system): OWNER is the responsible component/agent;
 ACCEPT is a machine-verifiable acceptance path (test suite, live e2e record,
@@ -42,7 +52,7 @@ DEVIATION = approved waiver or failure strategy.
 | --- | --- | --- | --- | --- | --- | --- |
 | B1 | Database | Consistency/locking/migration/crash-recovery on the target Postgres container | Gate 2 pg suites; crash-recovery tests (`remote-turn-store-pg.test.ts` onStep) | core-agent | pg suites + crash tests | **DEPLOY-GATE**: one restart drill on the target host |
 | B2 | Network | Per-turn internal networks, egress proxy sole outbound route | G3-06 + live e2e network inspect (`rt-net-*` members) | attestor-agent / egress-agent | live e2e | CLOSED (verified live) |
-| B3 | Architecture | x86_64 Linux host, Docker CE, compose | Host facts sheet | deploy-agent | host facts recorded at deploy | **DEPLOY-GATE**: record OS/Docker/CPU/RAM at deployment |
+| B3 | Architecture | Single-host Docker on the declared target: macOS arm64 + Docker Desktop (engine 28.3.0), compose; Linux container platform | Host facts sheet | deploy-agent | host facts recorded at deploy | **DEPLOY-GATE**: record OS/Docker/CPU/RAM at deployment |
 | B4 | Licensing | Docker CE, postgres, node, jose, pg licenses reviewed | License note in runbook | deploy-agent | license note | CLOSED (vendored deps listed) |
 | B5 | Crypto | Ed25519 key sets, mTLS, egress tokens; keys only in gitignored `.env`/secret store | Key ceremony + rotation drill | deploy-agent | ceremony/rotation in runbook | **DEPLOY-GATE**: rotation drill once at deploy |
 | B6 | Time sync | Host NTP; skew windows depend on wall clock | `timedatectl` drift check | deploy-agent | drift check at deploy | **DEPLOY-GATE**: NTP confirmed at deploy |

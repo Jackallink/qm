@@ -15,8 +15,14 @@ explicitly deferred ([07-gate2-validation.md](./07-gate2-validation.md)
 ### 1.1 D0-T target profile declaration
 
 D0-T target profile for this branch: **single-host Docker** deployment
-(docker-compose shape) on the customer's private host, with PostgreSQL in a
-pinned container on the same host. Evidence basis:
+(docker-compose shape) on the declared D0-T target host: this machine
+(macOS arm64, Darwin 24.6.0, Docker Desktop engine 28.3.0, Linux container
+platform), with PostgreSQL in a pinned container on the same host. Profile
+revision (2026-08-30): the host shape worded earlier as "customer's private
+host, x86_64 Linux" is revised to the actual target host per the D0-T
+acceptance checklist precondition 4; the single-host Docker + pinned
+PostgreSQL shape, boundaries, and Gate 3 evidence scope stand unchanged.
+Evidence basis:
 
 - D0-L already proves the full control plane on this shape: all-container
   deployment on loopback, real model turns, restart and non-purge persistence
