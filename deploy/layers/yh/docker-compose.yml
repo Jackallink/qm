@@ -62,6 +62,7 @@ services:
       CLIENT_CERT_FINGERPRINT: ${CLIENT_CERT_FINGERPRINT}
       EXECUTOR_BASE_URL: http://egress-gw:48080
       ATTESTOR_BASE_URL: http://attestor:8082
+      BINDING_VERSION: ${BINDING_VERSION:-1}
       PORT: "8081"
 
 volumes:
