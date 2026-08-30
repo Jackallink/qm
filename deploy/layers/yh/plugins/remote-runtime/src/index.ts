@@ -14,6 +14,7 @@ export interface RuntimeConfig {
   clientCertFingerprint: string;
   executorBaseUrl: string;
   attestorBaseUrl: string;
+  bindingVersion: number;
   now?: () => number;
 }
 
@@ -235,7 +236,7 @@ export async function handleTurn(
   const { config } = handlers;
   if (!isEnvelope(body)) return { status: 400, body: { error: "bad_request", message: "invalid envelope" } };
   const envelope = body as TurnEnvelope;
-  if (envelope.bindingVersion !== 1) return { status: 400, body: { error: "bad_request", message: "unsupported protocol version" } };
+  if (envelope.bindingVersion !== config.bindingVersion) return { status: 400, body: { error: "bad_request", message: "unsupported protocol version" } };
   const turn = await verifyTurnToken(envelope.turnToken, config.coreVerificationKeys, {
     aud: config.runtimeAudience,
     remoteTurnId: envelope.remoteTurnId,

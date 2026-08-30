@@ -33,6 +33,7 @@ const config: RuntimeConfig = {
   clientCertFingerprint: requireEnv("CLIENT_CERT_FINGERPRINT"),
   executorBaseUrl: requireEnv("EXECUTOR_BASE_URL"),
   attestorBaseUrl: requireEnv("ATTESTOR_BASE_URL"),
+  bindingVersion: Number(process.env.BINDING_VERSION ?? 1),
 };
 
 const handlers = {

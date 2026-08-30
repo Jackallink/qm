@@ -1,4 +1,4 @@
-import { createHash, randomBytes, generateKeyPairSync } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, generateKeyPairSync } from "node:crypto";
 import { CompactSign, compactVerify, decodeProtectedHeader, importPKCS8, importSPKI } from "jose";
 import type { KeySetEntry } from "./binding-store.ts";
 
@@ -17,13 +17,18 @@ export interface RemoteTurnKeyProvider {
   getCurrentSigningKey(): { kid: string; privateKeyPem: string };
 }
 
+function kidFromPublicKey(publicKey: ReturnType<typeof createPublicKey>): string {
+  return sha256Hex(publicKey.export({ type: "spki", format: "der" }).toString("hex")).slice(0, 8);
+}
+
 export function createRemoteTurnKeyProvider(opts: { kid?: string; privateKeyPem?: string } = {}): RemoteTurnKeyProvider {
   const { kid: givenKid, privateKeyPem: givenKey } = opts;
-  if (givenKid && givenKey) {
-    return { getCurrentSigningKey: () => ({ kid: givenKid, privateKeyPem: givenKey }) };
+  if (givenKey) {
+    const kid = givenKid ?? kidFromPublicKey(createPublicKey(createPrivateKey(givenKey)));
+    return { getCurrentSigningKey: () => ({ kid, privateKeyPem: givenKey }) };
   }
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const kid = sha256Hex(publicKey.export({ type: "spki", format: "der" }).toString("hex")).slice(0, 8);
+  const kid = kidFromPublicKey(publicKey);
   const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   return { getCurrentSigningKey: () => ({ kid, privateKeyPem }) };
 }
