@@ -643,7 +643,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       if (runLease !== input.leaseToken) return { ok: false as const, reason: "no_lease" as const };
 
       const { rows: turnRows } = await client.query<Record<string, unknown>>(
-        `SELECT status, turn_jti_hash, attestation_nonce_hash, version, pre_claim_expires_at
+        `SELECT status, binding_id, binding_version, turn_jti_hash, attestation_nonce_hash, version, pre_claim_expires_at
          FROM remote_turn WHERE id=$1 FOR UPDATE`,
         [input.remoteTurnId],
       );
