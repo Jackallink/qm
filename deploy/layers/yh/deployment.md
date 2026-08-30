@@ -1,7 +1,10 @@
 # yh layer runbook (Gate 3 §8)
 
-Status: **drilled once** — deploy/rotate/rollback exercised on this host
-(2026-08-16), satisfying 08 §9 and D0-T row A13. Evidence:
+Status: **local-equivalent drill completed; target-host acceptance pending** —
+deploy/rotate/rollback was exercised on this host (2026-08-16), satisfying
+the code-side runbook exercise. A fresh-checkout drill on the actual target
+host remains required for D0-T A13/B1/B3/B5/B6/B7/B8; use
+`d0t-deploy-gate.md` to record it. Evidence from the local-equivalent drill:
 - Deploy: binding v1 created and enabled (deploy-agent)
 - Rotate: core key core-v1→core-v2, version 1→2 CAS; stale-version rotate
   refused with `version_conflict`
