@@ -673,6 +673,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
           [
             input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
             nowMs,
+            null,
             Number(turn.version),
             workloadIdentity,
             turnToken,
