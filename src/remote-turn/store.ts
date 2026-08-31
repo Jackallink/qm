@@ -664,16 +664,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
         const { token: turnToken, exp } = await mintDispatchTurnToken(client, input.remoteTurnId, input.envelope, turn);
         const { rows: updated } = await client.query<Record<string, unknown>>(
           `UPDATE remote_turn
-           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$8, turn_token=$9, attestation_nonce=$10,
+           SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$7, turn_token=$8, attestation_nonce=$9,
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
-               pre_claim_expiry=$11, pre_claim_expires_at=$11,
+               pre_claim_expiry=$10, pre_claim_expires_at=$10,
                version=version+1, updated_at=$5
-           WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7 AND abort_requested_at IS NULL
+           WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$6 AND abort_requested_at IS NULL
            RETURNING version, pre_claim_expires_at, dispatch_attempt`,
           [
             input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
             nowMs,
-            null,
             Number(turn.version),
             workloadIdentity,
             turnToken,
