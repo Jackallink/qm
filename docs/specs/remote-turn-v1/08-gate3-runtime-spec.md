@@ -10,6 +10,12 @@ open ("private-layer decision" points) and the core-side wiring that Gate 2
 explicitly deferred ([07-gate2-validation.md](./07-gate2-validation.md)
 "偏差与部分覆盖" items 4–8).
 
+Amended by [09-gate3-executor-capability-spec.md](./09-gate3-executor-capability-spec.md)
+(2026-08-31): executor capability contract (§3.1/§3.3/§5.4a), claim-response
+loss recovery (§5.4a/§3.1), usage and teardown closure (§3.1–§3.3/§5.4a),
+pre-claim network verification (§3.2). Where 09 and this file disagree, 09
+wins.
+
 ## 1. Scope and prerequisites
 
 ### 1.1 D0-T target profile declaration

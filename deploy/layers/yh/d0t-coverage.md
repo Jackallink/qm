@@ -94,5 +94,8 @@ with the G3-10 rework.
 
 DEPLOY-GATE items remain on-site confirmations executed per `deployment.md`
 (A13, B1, B3, B5, B6, B7, B8). G3-10 re-execution with the corrected
-executor path is required before A4/A5/A8/A9/A10/A12/B2 can close. A row
+executor path is required before A4/A5/A8/A9/A10/A12/B2 can close. The
+remediation design is
+`docs/specs/remote-turn-v1/09-gate3-executor-capability-spec.md`
+(Gate-1 re-review pending). A row
 with no DEVIATION stands as written.
