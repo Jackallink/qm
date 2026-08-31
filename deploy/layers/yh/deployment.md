@@ -9,7 +9,10 @@ host remains required for D0-T A13/B1/B3/B5/B6/B7/B8; use
 - Rotate: core key core-v1→core-v2, version 1→2 CAS; stale-version rotate
   refused with `version_conflict`
 - Rollback: disable (v3, enabled=false) → re-enable (v4, enabled=true)
-- Live full-loop e2e: real Docker + Postgres + deepseek (G3-10)
+- Live full-loop e2e (G3-10): claimed 2026-08-16, **invalidated 2026-08-31**.
+  The record proves only a lower-layer sandbox-to-egress-to-model smoke; the
+  Core-to-runtime-to-executor-to-receipt-to-teardown loop never ran (see
+  `d0t-coverage.md` §C). G3-10 is blocked pending executor-link rework.
 
 D0-T rows B1/B5/B6/B7/B8 keep their on-site confirmation steps for the
 production host; this host has executed the equivalent drills.

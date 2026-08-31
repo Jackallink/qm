@@ -38,6 +38,26 @@ boundaries, and requirements are unchanged.
 | B7 | Record the single-host HA waiver and execute the documented recovery drill. | Approved waiver reference, service restart sequence, recovery time and final health/canary result. | HA is claimed, or recovery cannot restore a safe stopped/operable state. |
 | B8 | Record the backup policy and perform one restore validation against an isolated recovery target. | Backup location class, retention, restore timestamp, recovered schema/config proof and cleanup record. | Only a backup command exists; no restore result is available. |
 
+## Execution log
+
+### 2026-08-30/31 — A13 partial execution on the declared target host
+
+Fresh checkout (`d0t-acceptance` worktree at `3a793c7`), key ceremony, image
+build (executor `qm-executor:d0t`, digest `3c79a158…`), compose stack up.
+B3 host facts recorded: macOS 15.6 (24G84), kernel 24.6.0 arm64, 10 cores,
+64 GiB RAM, Docker Desktop engine 28.3.0, overlay2, linux/aarch64. Binding
+`binding-1` (version 2) created and enabled. Core fixes `ae346c9`,
+`b30db2c`, `9da1720` landed during the drill (single-source pre-claim
+expiry; dispatch UPDATE parameter numbering). Canary turn
+`810debff-b0ba-4dce-b84f-ea6f2ed4b2d7` passed session_bind, admit,
+prepare_dispatch and claim (HTTP 200), then failed at the executor link:
+the runtime POSTs `${EXECUTOR_BASE_URL}/execute` to egress-gw, which has no
+such route (HTTP 404); the turn ended in `timeout`. Root-cause review
+invalidated the 8-16 G3-10 evidence and identified five defects (see
+`d0t-coverage.md` §C). Result: **blocked** — G3-10 rework required before
+A13 can complete. Rotation and rollback drills were not executed in this
+run.
+
 ## Acceptance record template
 
 Record one entry per target deployment in the approved private evidence store:
