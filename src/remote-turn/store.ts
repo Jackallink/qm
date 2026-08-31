@@ -182,6 +182,7 @@ export interface PreClaimExpectationSnapshot {
   intendedWorkloadIdentity: string;
   releaseDigest: string;
   policyDigest: string;
+  networkPolicyId: string;
   endpointAllowlist: string[];
   egressAudience: string;
   expiry: number;
@@ -270,7 +271,6 @@ export interface RemoteTurnEventRecord {
 
 const ADMISSION_WINDOW_SEC = 5 * 60;
 const ADMISSION_WINDOW_MS = ADMISSION_WINDOW_SEC * 1000;
-const PRE_CLAIM_WINDOW_SEC = 90;
 
 const errorGuardedClients = new WeakSet<PoolClient>();
 
@@ -461,7 +461,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
             input.bindingId, bindingVersion, inputDigest, envelopeDigest, historyDigest,
             binding!.release_digest as string, JSON.stringify(receiptKeySnapshot), "created",
             computePolicyDigest(binding!), JSON.stringify(endpointAllowlistOf(binding!)), binding!.egress_audience as string,
-            Math.floor(createdAt / 1000) + Number(binding!.token_ttl_ms) / 1000,
+            null,
             JSON.stringify(input.history),
             ADMISSION_WINDOW_SEC, input.g0.traceId, createdAt,
           ],
@@ -591,7 +591,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     remoteTurnId: string,
     envelope: DispatchEnvelope,
     turn: Record<string, unknown>,
-  ): Promise<string> {
+  ): Promise<{ token: string; exp: number }> {
     if (!abortKey) throw new Error("remote turn signing key is not configured");
     const { rows: bindingRows } = await client.query<{ runtime_audience: string; token_ttl_ms: number }>(
       "SELECT runtime_audience, token_ttl_ms FROM remote_runtime_binding WHERE id=$1",
@@ -601,14 +601,15 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
     const audience = bindingRow?.runtime_audience ?? "";
     const ttlSec = Math.min(Number(bindingRow?.token_ttl_ms ?? 90_000) / 1000, 90);
     const nowSec = Math.floor(now() / 1000);
-    return mintTurnToken(
+    const exp = nowSec + ttlSec;
+    const token = await mintTurnToken(
       {
         kid: abortKey.kid,
         iss: "urn:qm:core",
         aud: audience,
         iat: nowSec,
         nbf: nowSec,
-        exp: nowSec + ttlSec,
+        exp,
         jti: envelope.turnJti,
         capability: "turn",
         remoteTurnId,
@@ -623,6 +624,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       },
       abortKey,
     );
+    return { token, exp };
   }
 
   async function prepareDispatch(input: {
@@ -659,23 +661,23 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       if (status === "admitted" && storedJtiHash === null) {
         if (!abortKey) return { ok: false as const, reason: "not_dispatchable" as const };
         const workloadIdentity = `wl-${input.remoteTurnId}`;
-        const turnToken = await mintDispatchTurnToken(client, input.remoteTurnId, input.envelope, turn);
+        const { token: turnToken, exp } = await mintDispatchTurnToken(client, input.remoteTurnId, input.envelope, turn);
         const { rows: updated } = await client.query<Record<string, unknown>>(
           `UPDATE remote_turn
            SET status='dispatching', turn_jti_hash=$2, attestation_nonce_hash=$3, workload_identity=$8, turn_token=$9, attestation_nonce=$10,
                dispatch_owner=$4, dispatch_attempt=1, dispatch_started_at=$5,
-               pre_claim_expires_at=(SELECT extract(epoch from transaction_timestamp())) + $6,
+               pre_claim_expiry=$11, pre_claim_expires_at=$11,
                version=version+1, updated_at=$5
            WHERE id=$1 AND status='admitted' AND turn_jti_hash IS NULL AND version=$7 AND abort_requested_at IS NULL
            RETURNING version, pre_claim_expires_at, dispatch_attempt`,
           [
             input.remoteTurnId, turnJtiHash, nonceHash, "dispatch-coordinator",
             nowMs,
-            PRE_CLAIM_WINDOW_SEC,
             Number(turn.version),
             workloadIdentity,
             turnToken,
             input.envelope.attestationNonce,
+            exp,
           ],
         );
         const row = updated[0];
@@ -958,9 +960,10 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
 
   async function getPreClaimExpectation(remoteTurnId: string): Promise<PreClaimExpectationSnapshot | null> {
     const { rows } = await pool.query(
-      `SELECT id, binding_id, binding_version, turn_jti_hash, attestation_nonce_hash, workload_identity,
-              release_digest, policy_digest, endpoint_allowlist, egress_audience, pre_claim_expiry, status, version
-       FROM remote_turn WHERE id=$1`,
+      `SELECT t.id, t.binding_id, t.binding_version, t.turn_jti_hash, t.attestation_nonce_hash, t.workload_identity,
+              t.release_digest, t.policy_digest, t.endpoint_allowlist, t.egress_audience, t.pre_claim_expiry, t.status, t.version,
+              b.network_policy_id
+       FROM remote_turn t JOIN remote_runtime_binding b ON b.id = t.binding_id WHERE t.id=$1`,
       [remoteTurnId],
     );
     const row = rows[0];
@@ -979,6 +982,7 @@ export function createRemoteTurnStore(connectionString: string, opts: RemoteTurn
       intendedWorkloadIdentity: row.workload_identity as string,
       releaseDigest: row.release_digest as string,
       policyDigest: row.policy_digest as string,
+      networkPolicyId: row.network_policy_id as string,
       endpointAllowlist: allowlist,
       egressAudience: row.egress_audience as string,
       expiry: Number(row.pre_claim_expiry),

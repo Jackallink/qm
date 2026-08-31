@@ -182,7 +182,6 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
         await config.docker.removeVolume(vol).catch(() => undefined);
         return { ok: false, reason: "pre_claim_already_exists" };
       }
-      const nowSec = Math.floor(now() / 1000);
       const preClaimAttestation = await signArtifact(
         {
           artifact: "pre_claim_attestation",
@@ -199,7 +198,7 @@ export function createAttestor(config: AttestorConfig): AttestorHandlers {
           networkPolicyId: config.networkPolicyId,
           endpointAllowlist: config.endpointAllowlist,
           egressAudience: config.egressAudience,
-          expiry: nowSec + 300,
+          expiry: turn.exp,
           singleUse: true,
         },
         config.attestorKey,

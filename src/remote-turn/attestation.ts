@@ -47,6 +47,7 @@ export interface PreClaimExpected {
   intendedWorkloadIdentity: string;
   releaseDigest: string;
   policyDigest: string;
+  networkPolicyId: string;
   endpointAllowlist: string[];
   egressAudience: string;
   expiry: number;
@@ -281,6 +282,7 @@ function preClaimExpectedMatches(claims: PreClaimClaims, expected: PreClaimExpec
     claims.intendedWorkloadIdentity === expected.intendedWorkloadIdentity &&
     claims.releaseDigest === expected.releaseDigest &&
     claims.policyDigest === expected.policyDigest &&
+    claims.networkPolicyId === expected.networkPolicyId &&
     claims.endpointAllowlist.length === expected.endpointAllowlist.length &&
     claims.endpointAllowlist.every((url, index) => url === expected.endpointAllowlist[index]) &&
     claims.egressAudience === expected.egressAudience &&

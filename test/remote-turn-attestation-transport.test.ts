@@ -72,6 +72,7 @@ function preClaimExpected(overrides: Record<string, unknown> = {}): PreClaimExpe
     intendedWorkloadIdentity: "wli",
     releaseDigest: HASH64,
     policyDigest: HASH64,
+    networkPolicyId: "net-1",
     endpointAllowlist: ["https://api.deepseek.com"],
     egressAudience: "urn:qm:egress:1",
     expiry: 1_800_000_000,
