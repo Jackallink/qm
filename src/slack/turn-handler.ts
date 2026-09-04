@@ -266,9 +266,16 @@ export function createTurnHandler(deps: {
             const ts = await postReply(rendered);
             if (ts) await taskList?.attach(ts, rendered);
           },
-          addReaction: (name) => client.reactions.add({ channel: inc.channel, timestamp: inc.ts, name }).then(() => {}),
+          addReaction: (name) =>
+            client.reactions
+              .add({ channel: inc.channel, timestamp: inc.ts, name })
+              .then(() => {})
+              .catch(() => undefined),
           removeReaction: (name) =>
-            client.reactions.remove({ channel: inc.channel, timestamp: inc.ts, name }).then(() => {}),
+            client.reactions
+              .remove({ channel: inc.channel, timestamp: inc.ts, name })
+              .then(() => {})
+              .catch(() => undefined),
           emojiCandidates: [...DEFAULT_ACK_REACTIONS],
           emojiPick: ackEmoji.requestAckEmoji(text, ackEmoji.ackPickCandidates(client), {
             channel: inc.channel,
@@ -279,13 +286,20 @@ export function createTurnHandler(deps: {
       taskList = createTaskListPresenter({
         post: (text, blocks) => postReply(text, blocks),
         update: (ts, text, blocks) =>
-          client.chat.update({ channel: inc.channel, ts, text, blocks, ...botIdentityArgs() }).then(() => {
-            mirrorSelfPost(inc.channel, ts, text, { sub: replyThreadTs, editedAt: Date.now() });
-          }),
+          client.chat
+            .update({ channel: inc.channel, ts, text, blocks, ...botIdentityArgs() })
+            .then(() => {
+              mirrorSelfPost(inc.channel, ts, text, { sub: replyThreadTs, editedAt: Date.now() });
+            })
+            .catch(() => undefined),
         checkpoint: async (ts) => {
           if (queuedRunId) await checkpointRunEditRef(queuedRunId, ts);
         },
-        remove: (ts) => client.chat.delete({ channel: inc.channel, ts }).then(() => {}),
+        remove: (ts) =>
+          client.chat
+            .delete({ channel: inc.channel, ts })
+            .then(() => {})
+            .catch(() => undefined),
         onSurfacePosted: () => ack?.onSurfacePosted(),
         onError: (error) => console.error("[slack-plugin] task-list update failed:", (error as Error).message),
       });
