@@ -849,7 +849,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...((env.PORTAL_IDENTITY_SECRET ?? env.CORE_SIGNING_SECRET)
       ? { portalIdentitySecret: env.PORTAL_IDENTITY_SECRET ?? env.CORE_SIGNING_SECRET }
       : {}),
-    requireSignedPortalIdentity: env.REQUIRE_SIGNED_PORTAL_IDENTITY === "1",
+    requireSignedPortalIdentity:
+      boolEnvStrict("REQUIRE_SIGNED_PORTAL_IDENTITY", env.REQUIRE_SIGNED_PORTAL_IDENTITY) ?? false,
     ...(env.PRIME_MODEL ? { primeModel: env.PRIME_MODEL } : {}),
     ...(env.PRIME_BIN ? { primeBinPath: env.PRIME_BIN } : {}),
     ...(env.PRIME_SESSION_DIR ? { primeSessionDir: env.PRIME_SESSION_DIR } : {}),
