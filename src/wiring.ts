@@ -283,7 +283,13 @@ export function stopWithBackstop(
 ): void {
   const hardExit = setTimeout(() => {
     console.error(`[${label}] drain overran; releasing in-flight leases before forced exit`);
-    void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })]).finally(() => process.exit(0));
+    void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })]).then(
+      () => process.exit(0),
+      (e: unknown) => {
+        console.error(`[${label}] lease release failed: ${errMessage(e)}`);
+        process.exit(1);
+      },
+    );
   }, shutdownDrainMs + 5_000);
   hardExit.unref();
   void runtime.stop().then(
@@ -295,7 +301,9 @@ export function stopWithBackstop(
     (e: unknown) => {
       console.error(`[${label}] graceful stop failed: ${errMessage(e)}`);
       clearTimeout(hardExit);
-      void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })]).finally(() => process.exit(1));
+      void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })])
+        .catch(() => undefined)
+        .finally(() => process.exit(1));
     },
   );
 }
@@ -410,7 +418,9 @@ export function buildApp(
     },
   });
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
-  void identity.hydrate();
+  void identity.hydrate().catch((e: unknown) => {
+    console.error(`[wiring] identity hydrate failed: ${errMessage(e)}`);
+  });
   const leaderLease: LeaderLease = pgArtifactMap
     ? createPostgresLeaderLease(pgArtifactMap.pool)
     : createNoopLeaderLease();
