@@ -1279,7 +1279,11 @@ const FILE_ENV_POINTERS: Array<[RegExp, (abs: string) => string]> = [
 
 export function renderUseScript(m: MaterializedCred): string {
   if (m.kind === "env") return m.env.map((e) => `export ${e.key}=${shq(e.value)}`).join("\n") + "\n";
-  const lines = [`__kc_dir="$(mktemp -d "\${TMPDIR:-/tmp}/keychain.XXXXXX")"`, `umask 077`];
+  const lines = [
+    `__kc_dir="$(mktemp -d "\${TMPDIR:-/tmp}/keychain.XXXXXX")"`,
+    `umask 077`,
+    `trap 'rm -rf "$__kc_dir"' EXIT`,
+  ];
   for (const f of m.files) {
     const parent = f.path.includes("/") ? f.path.replace(/\/[^/]*$/, "") : "";
     if (parent) lines.push(`mkdir -p "$__kc_dir/${parent}"`);

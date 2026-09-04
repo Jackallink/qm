@@ -514,6 +514,7 @@ test("file bundles: one item per service, materialize to a /tmp script with env 
   assert.equal(m.kind, "file");
   const script = renderUseScript(m);
   assert.match(script, /mktemp -d/);
+  assert.match(script, /trap 'rm -rf "\$__kc_dir"' EXIT/);
   assert.match(script, /chmod 600/);
   assert.match(script, /export AWS_SHARED_CREDENTIALS_FILE="\$__kc_dir\/.aws\/credentials"/);
   assert.ok(
