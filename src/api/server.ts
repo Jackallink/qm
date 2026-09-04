@@ -357,7 +357,9 @@ function buildFastify(wiring: Wiring, server: Server): { fastify: FastifyInstanc
     exposeHeadRoutes: false,
     routerOptions: { maxParamLength: 100_000 },
     frameworkErrors: (_err, request, reply) => {
-      void fallback(request, reply);
+      void fallback(request, reply).catch((e: unknown) => {
+        console.error("[api] framework error fallback failed:", e);
+      });
     },
   });
 
