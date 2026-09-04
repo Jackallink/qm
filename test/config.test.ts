@@ -24,6 +24,15 @@ test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.equal(loadConfig({ ORG_BRAND_SELF_LABEL: "x".repeat(80) }).brandingDefault?.selfLabel?.length, 40);
 });
 
+test("REQUIRE_SIGNED_PORTAL_IDENTITY parses as a strict boolean with unset defaulting to false", () => {
+  assert.equal(loadConfig({}).requireSignedPortalIdentity, false);
+  assert.equal(loadConfig({ REQUIRE_SIGNED_PORTAL_IDENTITY: "1" }).requireSignedPortalIdentity, true);
+  assert.equal(loadConfig({ REQUIRE_SIGNED_PORTAL_IDENTITY: "TRUE" }).requireSignedPortalIdentity, true);
+  assert.equal(loadConfig({ REQUIRE_SIGNED_PORTAL_IDENTITY: "yes" }).requireSignedPortalIdentity, true);
+  assert.equal(loadConfig({ REQUIRE_SIGNED_PORTAL_IDENTITY: "0" }).requireSignedPortalIdentity, false);
+  assert.throws(() => loadConfig({ REQUIRE_SIGNED_PORTAL_IDENTITY: "garbage" }), /REQUIRE_SIGNED_PORTAL_IDENTITY/);
+});
+
 test("store kinds default to memory and accept postgres", () => {
   const def = loadConfig({});
   assert.equal(def.sessionStore, "memory");
