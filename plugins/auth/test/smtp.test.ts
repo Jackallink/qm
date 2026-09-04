@@ -148,6 +148,29 @@ test("STARTTLS mode refuses a server that does not advertise STARTTLS", async (t
   await assert.rejects(() => smtpDeliver(options(server.port, { tls: "starttls" }), null), /does not offer STARTTLS/);
 });
 
+test("a stalled TLS handshake past the timeout destroys the socket", async (t) => {
+  let closed = false;
+  let conn: Socket | undefined;
+  const server = createServer((socket) => {
+    conn = socket;
+    socket.on("data", () => {});
+    socket.on("close", () => {
+      closed = true;
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    conn?.destroy();
+    server.close();
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await assert.rejects(() => smtpDeliver(options(port, { tls: "implicit", timeoutMs: 300 }), null), /timed out/);
+  const deadline = Date.now() + 1000;
+  while (!closed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(closed, true, "the half-open socket must be destroyed so the server side sees it close");
+});
+
 test("a connection refusal is reported rather than hanging", async () => {
   await assert.rejects(() => smtpDeliver(options(1, { timeoutMs: 2000 }), null));
 });
