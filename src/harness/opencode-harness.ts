@@ -307,6 +307,8 @@ async function waitForServer(proc: ChildProcess, timeoutMs: number): Promise<str
       clearTimeout(timer);
       proc.stdout?.off("data", onChunk);
       proc.stderr?.off("data", onChunk);
+      proc.off("error", onError);
+      proc.off("exit", onExit);
     };
     const timer = setTimeout(() => {
       cleanup();
@@ -325,14 +327,16 @@ async function waitForServer(proc: ChildProcess, timeoutMs: number): Promise<str
     };
     proc.stdout?.on("data", onChunk);
     proc.stderr?.on("data", onChunk);
-    proc.once("error", (error) => {
+    const onError = (error: Error): void => {
       cleanup();
       reject(error);
-    });
-    proc.once("exit", (code) => {
+    };
+    const onExit = (code: number | null): void => {
       cleanup();
       reject(new Error(`OpenCode exited during startup (${code}): ${diagnostics()}`));
-    });
+    };
+    proc.once("error", onError);
+    proc.once("exit", onExit);
   });
 }
 
