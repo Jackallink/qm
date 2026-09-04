@@ -336,15 +336,23 @@ export class PrimeRpcClient {
   /** Wait until an event of the given type arrives (after the wait starts). */
   private waitForEvent(type: string, timeoutMs: number, signal?: AbortSignal): Promise<PrimeAgentEvent> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      if (signal?.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      const prev = this.options.onEvent;
+      const detach = (): void => {
+        clearTimeout(timer);
         this.options.onEvent = prev;
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      const timer = setTimeout(() => {
+        detach();
         reject(new Error(`timeout waiting for ${type} (${timeoutMs}ms). stderr: ${this.exitReason.slice(-500)}`));
       }, timeoutMs);
-      const prev = this.options.onEvent;
       const listener = (event: PrimeAgentEvent) => {
         if (event.type === type) {
-          clearTimeout(timer);
-          this.options.onEvent = prev;
+          detach();
           resolve(event);
         }
       };
@@ -352,17 +360,11 @@ export class PrimeRpcClient {
         listener(e);
         prev?.(e);
       };
-      if (signal) {
-        signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            this.options.onEvent = prev;
-            reject(new Error("aborted"));
-          },
-          { once: true },
-        );
-      }
+      const onAbort = (): void => {
+        detach();
+        reject(new Error("aborted"));
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 }
