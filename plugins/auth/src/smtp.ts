@@ -141,10 +141,10 @@ async function openSocket(options: SmtpOptions, timeoutMs: number): Promise<Sock
       : netConnect({ host: options.host, port: options.port });
   socket.on("error", () => undefined);
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`SMTP connect to ${options.host}:${options.port} timed out`)),
-      timeoutMs,
-    );
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`SMTP connect to ${options.host}:${options.port} timed out`));
+    }, timeoutMs);
     socket.once(options.tls === "implicit" ? "secureConnect" : "connect", () => {
       clearTimeout(timer);
       resolve();
